@@ -10,16 +10,21 @@ async function bootstrap() {
   /* ========== Global Validation ========== */
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // DTO’da olmayan alanları kırp
-      transform: true, // tip dönüşümleri (query/body)
-      forbidNonWhitelisted: true, // DTO’da olmayan alan gelirse 400
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
     }),
   );
 
-  /* ========== CORS Ayarı (frontend: http://localhost:3001) ========== */
+  /* ========== CORS Ayarı ========== */
   app.enableCors({
-    origin: ['http://localhost:3001', 'http://localhost:3000'],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    origin: [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://dailyspark-frontend-self.vercel.app',
+    ],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   });
 
@@ -40,6 +45,6 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, document);
 
-  await app.listen(3000);
+  await app.listen(process.env.PORT || 3000);
 }
 bootstrap();
