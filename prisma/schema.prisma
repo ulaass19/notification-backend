@@ -1,0 +1,393 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum FocusArea {
+  EDUCATION
+  CAREER
+  FINANCE
+  HEALTH_SPORTS
+  RELATIONSHIPS
+}
+
+enum MotivationCard {
+  FAMILY_LOVED_ONES
+  FREEDOM_INDEPENDENCE
+  PROVE_YOURSELF
+  COMFORT_LUXURY
+  CURIOSITY_GROWTH
+  INNER_PEACE_BALANCE
+}
+
+enum ZodiacSign {
+  ARIES
+  TAURUS
+  GEMINI
+  CANCER
+  LEO
+  VIRGO
+  LIBRA
+  SCORPIO
+  SAGITTARIUS
+  CAPRICORN
+  AQUARIUS
+  PISCES
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum MaritalStatus {
+  SINGLE
+  IN_RELATIONSHIP
+  MARRIED
+  SEPARATED_DIVORCED
+  PREFER_NOT_TO_SAY
+}
+
+enum InterestCategory {
+  PERSONAL_DEVELOPMENT
+  RELATIONSHIPS_PSYCHOLOGY
+  BUSINESS_ENTREPRENEURSHIP
+  FITNESS_HEALTH
+  FOOD_LIFESTYLE
+  FINANCE_INVESTING
+  FASHION_STYLE
+  TECHNOLOGY
+  MINIMALISM
+  MOTIVATION_HABITS
+}
+
+enum PrimaryGoal {
+  SELF_IMPROVEMENT
+  MORE_MONEY
+  BETTER_RELATIONSHIP
+  BETTER_APPEARANCE
+  HEALTHIER
+  CAREER_ADVANCEMENT
+  QUIT_BAD_HABITS
+}
+
+enum GoalTimeframe {
+  ONE_MONTH
+  THREE_MONTHS
+  SIX_MONTHS
+  ONE_YEAR
+}
+
+enum StressLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ContentTypePreference {
+  VIDEO
+  ARTICLE
+  QUIZ
+  PODCAST
+  SHORT_NOTES
+}
+
+enum MotivationType {
+  MONEY
+  STATUS_APPROVAL
+  SECURITY_COMFORT
+  LOVE_ACCEPTANCE
+  FREEDOM
+  SUCCESS_POWER
+}
+
+enum BiggestStruggle {
+  FOCUS
+  RELATIONSHIPS
+  MONEY_MANAGEMENT
+  SELF_CONFIDENCE
+  HEALTH_DISCIPLINE
+  WORK_LIFE
+  MOTIVATION
+}
+
+enum NotificationStatus {
+  PENDING
+  SCHEDULED
+  SENT
+  FAILED
+}
+
+enum SurveyStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model User {
+  id             Int        @id @default(autoincrement())
+  deviceId       String?    @unique
+  createdAt      DateTime   @default(now())
+  lastFeedbackAt DateTime?
+  feedbacks      Feedback[]
+
+  // New relations for inbox + notification feedback
+  userNotifications     UserNotification[]
+  notificationFeedbacks NotificationFeedback[]
+  surveyResponses SurveyResponse[]
+
+
+  role     UserRole @default(USER)
+  isActive Boolean  @default(true)
+
+  // Onboarding (Ekran 1-5)
+  birthDate  DateTime? // birthYear yerine değil, yanında (istersen sonra birthYear'i de buradan türetirsin)
+  zodiacSign ZodiacSign?
+
+  hometown String? // memleket (opsiyonel)
+
+  focusArea   FocusArea?
+  focusDetail String? // FINANCE ise: "CRYPTO/BORSA/..." gibi veya HEALTH_SPORTS: "YOGA/FITNESS/..."
+
+  motivationCard MotivationCard?
+
+  timezone String? // opsiyonel: Europe/Istanbul gibi, konum/saat için işe yarar
+
+  email                      String?   @unique
+  passwordHash               String?
+  isEmailVerified            Boolean   @default(false)
+  emailVerificationToken     String?
+  emailVerificationExpiresAt DateTime?
+
+  passwordResetToken     String?
+  passwordResetExpiresAt DateTime?
+
+  fullName       String?
+  birthYear      Int?
+  gender         Gender?
+  city           String?
+  occupation     String?
+  educationLevel String?
+  maritalStatus  MaritalStatus?
+
+  interests InterestCategory[]
+
+  primaryGoal   PrimaryGoal?
+  goalTimeframe GoalTimeframe?
+
+  dailyAppTime     String?
+  activeTimeOfDay  String?
+  socialMediaUsage String?
+  stressLevel      StressLevel?
+  preferredContent ContentTypePreference[]
+
+  selfDescriptionWords String[]
+  personalityTraits    String[]
+  mainMotivation       MotivationType?
+  biggestStruggle      BiggestStruggle?
+}
+
+model Feedback {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rating    Int
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id         Int                @id @default(autoincrement())
+  title      String
+  body       String
+  sendAt     DateTime           @default(now())
+  status     NotificationStatus @default(PENDING)
+  sentAt     DateTime?
+  error      String?
+  retryCount Int                @default(0)
+  createdAt  DateTime           @default(now())
+
+  audiences NotificationAudience[]
+  logs      NotificationLog[]
+
+  // New relation
+  userNotifications UserNotification[]
+}
+
+model Audience {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  rules       Json
+  userCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  notifications NotificationAudience[]
+  surveys SurveyAudience[]
+
+}
+
+model NotificationAudience {
+  id             Int          @id @default(autoincrement())
+  notification   Notification @relation(fields: [notificationId], references: [id])
+  notificationId Int
+
+  audience   Audience @relation(fields: [audienceId], references: [id])
+  audienceId Int
+}
+
+model NotificationLog {
+  id             Int          @id @default(autoincrement())
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  notificationId Int
+
+  attempt      Int
+  statusBefore NotificationStatus?
+  statusAfter  NotificationStatus?
+  success      Boolean
+  error        String?
+  provider     String?
+  providerId   String?
+  createdAt    DateTime            @default(now())
+}
+
+model UserNotification {
+  id             Int @id @default(autoincrement())
+  userId         Int
+  notificationId Int
+
+  deliveredAt DateTime  @default(now())
+  shownAt     DateTime?
+  openedAt    DateTime?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  feedback NotificationFeedback?
+
+  @@unique([userId, notificationId])
+  @@index([userId, deliveredAt])
+  @@index([notificationId])
+}
+
+model NotificationFeedback {
+  id                 Int @id @default(autoincrement())
+  userId             Int
+  userNotificationId Int @unique
+
+  rating    Int
+  note      String?
+  createdAt DateTime @default(now())
+
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userNotification UserNotification @relation(fields: [userNotificationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Survey {
+  id          Int          @id @default(autoincrement())
+  title       String
+  description String?
+  status      SurveyStatus @default(DRAFT)
+
+  // yayın penceresi (opsiyonel)
+  startAt DateTime?
+  endAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  questions  SurveyQuestion[]
+  audiences  SurveyAudience[]
+  responses  SurveyResponse[]
+
+  @@index([status, startAt, endAt])
+}
+
+model SurveyQuestion {
+  id       Int    @id @default(autoincrement())
+  surveyId Int
+  survey   Survey  @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+  text  String
+
+  options SurveyOption[]
+  answers SurveyAnswer[]
+
+  @@index([surveyId, order])
+}
+
+model SurveyOption {
+  id         Int @id @default(autoincrement())
+  questionId Int
+  question   SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+  text  String
+
+  answers SurveyAnswer[]
+
+  @@index([questionId, order])
+}
+
+model SurveyAudience {
+  id        Int @id @default(autoincrement())
+  surveyId  Int
+  audienceId Int
+
+  survey   Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  audience Audience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+
+  @@unique([surveyId, audienceId])
+  @@index([audienceId])
+}
+
+model SurveyResponse {
+  id       Int @id @default(autoincrement())
+  userId   Int
+  surveyId Int
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  survey Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  answers SurveyAnswer[]
+
+  // aynı kullanıcı aynı ankete 1 kez cevap versin
+  @@unique([userId, surveyId])
+  @@index([surveyId, createdAt])
+}
+
+model SurveyAnswer {
+  id          Int @id @default(autoincrement())
+  responseId  Int
+  questionId  Int
+  optionId    Int
+
+  response SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  question SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  option   SurveyOption   @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  // bir response içinde aynı soruya 1 cevap
+  @@unique([responseId, questionId])
+  @@index([questionId, optionId])
+}
