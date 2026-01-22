@@ -123,6 +123,58 @@ enum BiggestStruggle {
   MOTIVATION
 }
 
+enum EnergyDipTime {
+  AFTERNOON_14_16 // Öğleden sonra (14:00-16:00)
+  EVENING_18      // Akşamüstü yorgunluğu (18:00)
+  MORNING_07      // Sabah uyanmak zor (07:00)
+  NIGHT_23        // Gece kuşuyum ama çöküyorum (23:00)
+}
+
+enum ComfortZone {
+  COFFEE_SMELL   // Kahve kokusu ☕
+  PLAY_WITH_PET  // Evcil hayvanımla oynamak 🐾
+  LISTEN_MUSIC   // Müzik dinlemek 🎧
+  CHOCOLATE      // Çikolata kaçamağı 🍫
+  WALK           // Yürüyüş yapmak 👟
+}
+
+enum NegativeSelfTalk {
+  INADEQUATE         // "Yetersizim / Yapamayacağım."
+  TOO_LATE           // "Çok geç kaldım."
+  MUST_BE_PERFECT    // "Mükemmel olmalı."
+  WHAT_WILL_THEY_SAY // "İnsanlar ne der?"
+}
+
+enum WorkContext {
+  OFFICE_PLAZA   // Ofis/Plaza (Kurumsal)
+  HOME_OFFICE    // Ev/Home Office (Yalnız)
+  CAFE_OUTSIDE   // Kafe/Dışarısı (Gürültülü)
+  SCHOOL_LIBRARY // Okul/Kütüphane (Akademik)
+}
+
+enum ToneOfVoice {
+  SERGEANT // 🎖️ Çavuş Modu: Sert
+  ZEN      // 🌿 Zen Modu: Yumuşak
+  LOGIC    // 🧠 Mantık Modu: Analitik
+}
+
+enum BigDayType {
+  EXAM
+  PRESENTATION
+  WEDDING
+  PROJECT_DEADLINE
+  VACATION
+  OTHER
+}
+
+enum ChildrenAgeRange {
+  BABY_0_2
+  CHILD_3_12
+  TEEN_13_17
+  ADULT_18_PLUS
+  MIXED
+}
+
 enum NotificationStatus {
   PENDING
   SCHEDULED
@@ -146,8 +198,7 @@ model User {
   // New relations for inbox + notification feedback
   userNotifications     UserNotification[]
   notificationFeedbacks NotificationFeedback[]
-  surveyResponses SurveyResponse[]
-
+  surveyResponses       SurveyResponse[]
 
   role     UserRole @default(USER)
   isActive Boolean  @default(true)
@@ -197,6 +248,35 @@ model User {
   personalityTraits    String[]
   mainMotivation       MotivationType?
   biggestStruggle      BiggestStruggle?
+
+
+  // 1) "Günün hangi saatlerinde enerjin tükeniyor?" (tek seçim)
+  energyDipTime EnergyDipTime?
+
+  // 2) "Sana anında iyi gelen şey nedir?" (çoklu seçim)
+  comfortZones ComfortZone[]
+
+  // comfortZones içinde PLAY_WITH_PET seçilirse sorulur
+  petName String?
+
+  // 3) "Kendi kendine en çok söylediğin negatif cümle ne?" (tek seçim)
+  negativeSelfTalk NegativeSelfTalk?
+
+  // 4) "Genellikle nerede çalışıyorsun/vakit geçiriyorsun?" (tek seçim)
+  workContext WorkContext?
+
+  // 5) "Gerçek dost acı mı söyler, yoksa tatlı mı?" (tek seçim)
+  toneOfVoice ToneOfVoice?
+
+  // 6) "Yaklaşan büyük bir gün var mı?" (tarih + etiket)
+  bigDayDate  DateTime?
+  bigDayType  BigDayType?
+  bigDayLabel String?
+
+  // 7) Ebeveynlik durumu (çocuk var mı + opsiyonel yaş aralığı)
+  hasChildren      Boolean?
+  childrenAgeRange ChildrenAgeRange?
+
 }
 
 model Feedback {
@@ -236,8 +316,7 @@ model Audience {
   updatedAt   DateTime @updatedAt
 
   notifications NotificationAudience[]
-  surveys SurveyAudience[]
-
+  surveys        SurveyAudience[]
 }
 
 model NotificationAudience {
@@ -261,7 +340,7 @@ model NotificationLog {
   error        String?
   provider     String?
   providerId   String?
-  createdAt    DateTime            @default(now())
+  createdAt    DateTime @default(now())
 }
 
 model UserNotification {
@@ -312,17 +391,17 @@ model Survey {
   updatedAt DateTime @updatedAt
 
   // relations
-  questions  SurveyQuestion[]
-  audiences  SurveyAudience[]
-  responses  SurveyResponse[]
+  questions SurveyQuestion[]
+  audiences SurveyAudience[]
+  responses SurveyResponse[]
 
   @@index([status, startAt, endAt])
 }
 
 model SurveyQuestion {
-  id       Int    @id @default(autoincrement())
+  id       Int   @id @default(autoincrement())
   surveyId Int
-  survey   Survey  @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  survey   Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
 
   order Int @default(0)
   text  String
@@ -332,6 +411,7 @@ model SurveyQuestion {
 
   @@index([surveyId, order])
 }
+
 
 model SurveyOption {
   id         Int @id @default(autoincrement())
@@ -347,8 +427,8 @@ model SurveyOption {
 }
 
 model SurveyAudience {
-  id        Int @id @default(autoincrement())
-  surveyId  Int
+  id         Int @id @default(autoincrement())
+  surveyId   Int
   audienceId Int
 
   survey   Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
@@ -377,10 +457,10 @@ model SurveyResponse {
 }
 
 model SurveyAnswer {
-  id          Int @id @default(autoincrement())
-  responseId  Int
-  questionId  Int
-  optionId    Int
+  id         Int @id @default(autoincrement())
+  responseId Int
+  questionId Int
+  optionId   Int
 
   response SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
   question SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)

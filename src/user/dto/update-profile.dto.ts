@@ -8,6 +8,15 @@ import {
   MotivationType,
   PrimaryGoal,
   StressLevel,
+
+  // ✅ NovaMe / DailySpark enums (schema.prisma'da ekledik)
+  EnergyDipTime,
+  ComfortZone,
+  NegativeSelfTalk,
+  WorkContext,
+  ToneOfVoice,
+  BigDayType,
+  ChildrenAgeRange,
 } from '@prisma/client';
 import {
   IsOptional,
@@ -15,6 +24,9 @@ import {
   IsNumber,
   IsEnum,
   IsArray,
+  IsBoolean,
+  IsDateString,
+  MaxLength,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   ArrayNotEmpty,
 } from 'class-validator';
@@ -105,4 +117,62 @@ export class UpdateProfileDto {
   @IsString()
   deviceId?: string;
 
+  /* ===================== NovaMe / DailySpark Profil Soruları ===================== */
+
+  // 1) Enerji çöküş saati (tek seçim)
+  @IsOptional()
+  @IsEnum(EnergyDipTime)
+  energyDipTime?: EnergyDipTime;
+
+  // 2) Comfort zones (çoklu seçim)
+  @IsOptional()
+  @IsArray()
+  @IsEnum(ComfortZone, { each: true })
+  comfortZones?: ComfortZone[];
+
+  // comfortZones içinde PLAY_WITH_PET seçildiyse anlamlı
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  petName?: string;
+
+  // 3) Negatif iç ses (tek seçim)
+  @IsOptional()
+  @IsEnum(NegativeSelfTalk)
+  negativeSelfTalk?: NegativeSelfTalk;
+
+  // 4) Çalışma/vakit ortamı (tek seçim)
+  @IsOptional()
+  @IsEnum(WorkContext)
+  workContext?: WorkContext;
+
+  // 5) Ton seçimi (tek seçim)
+  @IsOptional()
+  @IsEnum(ToneOfVoice)
+  toneOfVoice?: ToneOfVoice;
+
+  // 6) Yaklaşan büyük gün
+  @IsOptional()
+  @IsDateString()
+  bigDayDate?: string;
+
+  @IsOptional()
+  @IsEnum(BigDayType)
+  bigDayType?: BigDayType;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  bigDayLabel?: string;
+
+  // 7) Ebeveynlik durumu
+  @IsOptional()
+  @IsBoolean()
+  hasChildren?: boolean;
+
+  @IsOptional()
+  @IsEnum(ChildrenAgeRange)
+  childrenAgeRange?: ChildrenAgeRange;
+
+  /* ============================================================================ */
 }

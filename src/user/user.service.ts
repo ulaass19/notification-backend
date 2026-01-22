@@ -1,10 +1,9 @@
-// src/user/user.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserByAdminDto } from './dto/update-user-by-admin.dto';
 import { FindAllUsersQueryDto } from './dto/find-all-users.dto';
-import { Prisma } from '@prisma/client';
+import { Prisma, ComfortZone } from '@prisma/client';
 
 @Injectable()
 export class UserService {
@@ -18,9 +17,10 @@ export class UserService {
         email: true,
         fullName: true,
         isEmailVerified: true,
-        isActive: true, // 👈 durum
+        isActive: true,
         deviceId: true,
         createdAt: true,
+
         birthYear: true,
         gender: true,
         city: true,
@@ -39,7 +39,21 @@ export class UserService {
         personalityTraits: true,
         mainMotivation: true,
         biggestStruggle: true,
-        role: true, // admin için de lazım
+
+        // ✅ NovaMe / DailySpark alanları da dönsün
+        energyDipTime: true,
+        comfortZones: true,
+        petName: true,
+        negativeSelfTalk: true,
+        workContext: true,
+        toneOfVoice: true,
+        bigDayDate: true,
+        bigDayType: true,
+        bigDayLabel: true,
+        hasChildren: true,
+        childrenAgeRange: true,
+
+        role: true,
       },
     });
   }
@@ -52,11 +66,10 @@ export class UserService {
       search,
       fullName,
       email,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       role,
       createdFrom,
       createdTo,
-      // FindAllUsersQueryDto içine boolean isActive alanı eklediğimizi varsayıyoruz
       isActive,
     } = query;
 
@@ -64,24 +77,13 @@ export class UserService {
 
     const where: Prisma.UserWhereInput = {};
 
-    // Global search (ID / ad / e-posta)
     if (search && search.trim().length > 0) {
       const s = search.trim();
       const idNum = Number(s);
 
       const searchOr: Prisma.UserWhereInput[] = [
-        {
-          fullName: {
-            contains: s,
-            mode: 'insensitive',
-          },
-        },
-        {
-          email: {
-            contains: s,
-            mode: 'insensitive',
-          },
-        },
+        { fullName: { contains: s, mode: 'insensitive' } },
+        { email: { contains: s, mode: 'insensitive' } },
       ];
 
       if (!Number.isNaN(idNum)) {
@@ -91,34 +93,22 @@ export class UserService {
       where.OR = searchOr;
     }
 
-    // Ad soyad filtresi
     if (fullName && fullName.trim().length > 0) {
-      where.fullName = {
-        contains: fullName.trim(),
-        mode: 'insensitive',
-      };
+      where.fullName = { contains: fullName.trim(), mode: 'insensitive' };
     }
 
-    // E-posta filtresi
     if (email && email.trim().length > 0) {
-      where.email = {
-        contains: email.trim(),
-        mode: 'insensitive',
-      };
+      where.email = { contains: email.trim(), mode: 'insensitive' };
     }
 
-    // Rol filtresi
     if (role) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       where.role = role;
     }
 
-    // Durum filtresi (aktif / pasif)
     if (typeof isActive === 'boolean') {
       where.isActive = isActive;
     }
 
-    // Kayıt tarihi filtresi
     if (createdFrom || createdTo) {
       where.createdAt = {};
       if (createdFrom) {
@@ -140,7 +130,7 @@ export class UserService {
           email: true,
           fullName: true,
           isEmailVerified: true,
-          isActive: true, // 👈 listede de dönüyoruz
+          isActive: true,
           deviceId: true,
           createdAt: true,
           birthYear: true,
@@ -168,7 +158,10 @@ export class UserService {
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
-    // ✅ deviceId undefined ise overwrite etmesin diye data objesini dinamik kuruyoruz
+    // comfortZones iş kuralı:
+    const cz = dto.comfortZones ?? undefined;
+    const hasPet = Array.isArray(cz) && cz.includes(ComfortZone.PLAY_WITH_PET);
+
     const data: Prisma.UserUpdateInput = {
       fullName: dto.fullName,
       birthYear: dto.birthYear,
@@ -189,6 +182,17 @@ export class UserService {
       personalityTraits: dto.personalityTraits,
       mainMotivation: dto.mainMotivation,
       biggestStruggle: dto.biggestStruggle,
+
+      // ✅ NovaMe / DailySpark map
+      energyDipTime: dto.energyDipTime,
+      comfortZones: dto.comfortZones,
+      negativeSelfTalk: dto.negativeSelfTalk,
+      workContext: dto.workContext,
+      toneOfVoice: dto.toneOfVoice,
+      bigDayType: dto.bigDayType,
+      bigDayLabel: dto.bigDayLabel,
+      hasChildren: dto.hasChildren,
+      childrenAgeRange: dto.childrenAgeRange,
     };
 
     // 🔥 KRİTİK: OneSignal playerId burada yazılacak
@@ -196,12 +200,29 @@ export class UserService {
       data.deviceId = dto.deviceId;
     }
 
+    // bigDayDate string geliyor -> Date'e çevir
+    if (dto.bigDayDate !== undefined) {
+      data.bigDayDate = dto.bigDayDate ? new Date(dto.bigDayDate) : null;
+    }
+
+    // petName kuralı
+    if (!hasPet) {
+      data.petName = null;
+    } else if (dto.petName !== undefined) {
+      const v = (dto.petName ?? '').trim();
+      data.petName = v.length ? v : null;
+    }
+
+    // hasChildren false ise ageRange temizle (DTO göndermese bile garanti)
+    if (dto.hasChildren === false) {
+      data.childrenAgeRange = null;
+    }
+
     await this.prisma.user.update({
       where: { id: userId },
       data,
     });
 
-    // Güncel haliyle kullanıcıyı geri döndürelim
     return this.getById(userId);
   }
 
@@ -210,7 +231,7 @@ export class UserService {
     const data: Prisma.UserUpdateInput = {
       fullName: dto.fullName,
       email: dto.email,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       role: dto.role,
       birthYear: dto.birthYear,
       gender: dto.gender,
@@ -220,14 +241,6 @@ export class UserService {
       isEmailVerified: dto.isEmailVerified,
     };
 
-    // (Opsiyonel) Admin tarafında da deviceId set edilebilsin istersen:
-    // Eğer UpdateUserByAdminDto içinde deviceId yoksa, bunu kaldırabilirsin.
-    // @ts-ignore
-    if (dto.deviceId !== undefined) {
-      // @ts-ignore
-      data.deviceId = dto.deviceId;
-    }
-
     await this.prisma.user.update({
       where: { id: userId },
       data,
@@ -236,24 +249,16 @@ export class UserService {
     return this.getById(userId);
   }
 
-  // === Admin: status switch endpoint'i ===
   async updateStatus(id: number, isActive: boolean) {
     return this.prisma.user.update({
       where: { id },
       data: { isActive },
-      select: {
-        id: true,
-        isActive: true,
-      },
+      select: { id: true, isActive: true },
     });
   }
 
-  // === Admin tarafından herhangi bir kullanıcıyı SİLMEK için ===
   async deleteUser(id: number) {
-    await this.prisma.user.delete({
-      where: { id },
-    });
-
+    await this.prisma.user.delete({ where: { id } });
     return { success: true };
   }
 }
