@@ -56,9 +56,15 @@ export class AuthService {
      * Burada dto.role opsiyonel.
      * - Eğer body'den role gelmezse → USER
      * - Dev ortamında admin yaratmak için curl ile role: "ADMIN" gönderebiliriz.
-     * (Prod ortamda bunu kilitlemek isteyebilirsin, not olarak dursun.)
      */
     const finalRole: UserRole = (dto as any).role ?? UserRole.USER;
+
+    // ✅ birthYear yoksa ama birthDate geldiyse otomatik üretelim
+    const computedBirthYear =
+      (dto as any).birthYear ??
+      ((dto as any).birthDate
+        ? new Date((dto as any).birthDate).getFullYear()
+        : null);
 
     const user = await this.prisma.user.create({
       data: {
@@ -68,7 +74,21 @@ export class AuthService {
         isEmailVerified: false,
         emailVerificationToken: otp,
         emailVerificationExpiresAt: expiresAt,
-        role: finalRole, // 🔥 artık kullanıcı role'ü ile kaydoluyor
+        role: finalRole,
+
+        // ✅ Mobil register payload alanları (DB’de alanlar varsa kaydolur)
+        gender: (dto as any).gender ?? null,
+        city: (dto as any).city ?? null,
+        hometown: (dto as any).hometown ?? null,
+        zodiacSign: (dto as any).zodiacSign ?? null,
+
+        // DB’de birthDate DateTime ise:
+        birthDate: (dto as any).birthDate
+          ? new Date((dto as any).birthDate)
+          : null,
+
+        // DB’de birthYear Int ise:
+        birthYear: computedBirthYear,
       },
     });
 
@@ -88,7 +108,7 @@ export class AuthService {
         email: user.email,
         fullName: user.fullName,
         isEmailVerified: user.isEmailVerified,
-        role: user.role, // 🔥 response'da da role'ü gösteriyoruz (frontend için faydalı)
+        role: user.role,
       },
     };
   }
@@ -127,7 +147,7 @@ export class AuthService {
     const accessToken = await this.signToken(
       updated.id,
       updated.email!,
-      updated.role as UserRole,
+      updated.role,
     );
 
     return {
@@ -163,11 +183,7 @@ export class AuthService {
     //   throw new UnauthorizedException('Lütfen önce e-posta adresinizi doğrulayın');
     // }
 
-    const accessToken = await this.signToken(
-      user.id,
-      user.email!,
-      user.role as UserRole,
-    );
+    const accessToken = await this.signToken(user.id, user.email!, user.role);
 
     return {
       status: 'LOGGED_IN',
