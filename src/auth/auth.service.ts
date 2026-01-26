@@ -13,7 +13,7 @@ import { MailService } from '../mail/mail.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import * as crypto from 'crypto';
-import { UserRole } from '@prisma/client'; // 🔥 role enum'u buradan geliyor
+import { UserRole, ZodiacSign, Gender } from '@prisma/client'; // ✅ ENUM'lar
 
 @Injectable()
 export class AuthService {
@@ -37,7 +37,47 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString(); // 6 hane
   }
 
+  // ✅ Prisma enum güvenli normalize (string gelirse bile patlamasın)
+  private normalizeZodiac(input: any): ZodiacSign | null {
+    if (!input) return null;
+    const val = String(input).trim();
+
+    // DTO zaten Prisma enum ise direkt döner
+    if ((Object.values(ZodiacSign) as string[]).includes(val)) {
+      return val as ZodiacSign;
+    }
+
+    // TR -> Prisma enum map (Prisma enum isimlerin İngilizce ise burayı uyarlarsın)
+    const map: Record<string, ZodiacSign> = {
+      Koç: 'ARIES' as ZodiacSign,
+      Boğa: 'TAURUS' as ZodiacSign,
+      İkizler: 'GEMINI' as ZodiacSign,
+      Yengeç: 'CANCER' as ZodiacSign,
+      Aslan: 'LEO' as ZodiacSign,
+      Başak: 'VIRGO' as ZodiacSign,
+      Terazi: 'LIBRA' as ZodiacSign,
+      Akrep: 'SCORPIO' as ZodiacSign,
+      Yay: 'SAGITTARIUS' as ZodiacSign,
+      Oğlak: 'CAPRICORN' as ZodiacSign,
+      Kova: 'AQUARIUS' as ZodiacSign,
+      Balık: 'PISCES' as ZodiacSign,
+    };
+
+    return map[val] ?? null;
+  }
+
+  private normalizeGender(input: any): Gender | null {
+    if (!input) return null;
+    const val = String(input).trim();
+    if ((Object.values(Gender) as string[]).includes(val)) {
+      return val as Gender;
+    }
+    // Eğer mobile "FEMALE/MALE/PREFER_NOT_TO_SAY" yolluyorsa ve Prisma farklıysa mapleyebilirsin.
+    return null;
+  }
+
   async register(dto: RegisterDto) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const {
       email,
       password,
@@ -48,9 +88,11 @@ export class AuthService {
       zodiacSign,
       birthYear,
       birthDate,
-    } = dto;
+      role,
+    } = dto as any;
 
     const existing = await this.prisma.user.findUnique({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       where: { email },
     });
     if (existing) {
@@ -63,13 +105,10 @@ export class AuthService {
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 10);
 
-    // role opsiyonel
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-    const finalRole: UserRole = (dto as any).role ?? UserRole.USER;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const finalRole: UserRole = role ?? UserRole.USER;
 
     // birthDate -> Date objesine çevir (YYYY-MM-DD)
-    // DB alanın DateTime ise bunu kullan. (Sende /mobile/me çıktısında birthYear var, birthDate yoktu.
-    // Eğer Prisma'da birthDate alanın yoksa, aşağıdaki birthDateDb satırını kaldır.)
     let birthDateDb: Date | null = null;
     if (birthDate) {
       const d = new Date(birthDate);
@@ -84,21 +123,29 @@ export class AuthService {
           ? birthDateDb.getFullYear()
           : null;
 
+    // ✅ ENUM normalize (string gelirse bile Prisma tipine çevir)
+    const genderDb = this.normalizeGender(gender);
+    const zodiacDb = this.normalizeZodiac(zodiacSign);
+
     const user = await this.prisma.user.create({
       data: {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         email,
         passwordHash,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         fullName,
         isEmailVerified: false,
         emailVerificationToken: otp,
         emailVerificationExpiresAt: expiresAt,
         role: finalRole,
 
-        // ✅ profil alanları (Prisma User modelinde varsa yaz)
-        gender: gender ?? null,
+        // ✅ profil alanları (Prisma User modelinde varsa)
+        gender: genderDb,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         city: city ?? null,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         hometown: hometown ?? null,
-        zodiacSign: zodiacSign ?? null,
+        zodiacSign: zodiacDb,
         birthYear: computedBirthYear,
 
         // Prisma'da birthDate alanın yoksa bunu SİL:
@@ -169,7 +216,7 @@ export class AuthService {
         id: updated.id,
         email: updated.email,
         isEmailVerified: updated.isEmailVerified,
-        role: updated.role, // 🔥 burada da role döndürüyoruz
+        role: updated.role,
       },
     };
   }
@@ -190,11 +237,6 @@ export class AuthService {
       throw new UnauthorizedException('E-posta veya şifre hatalı');
     }
 
-    // İstersen burada email verify zorunluluğunu ekleyebilirsin:
-    // if (!user.isEmailVerified) {
-    //   throw new UnauthorizedException('Lütfen önce e-posta adresinizi doğrulayın');
-    // }
-
     const accessToken = await this.signToken(user.id, user.email!, user.role);
 
     return {
@@ -205,7 +247,7 @@ export class AuthService {
         email: user.email,
         fullName: user.fullName,
         isEmailVerified: user.isEmailVerified,
-        role: user.role, // 🔥 frontend burada ADMIN mi diye bakacak
+        role: user.role,
       },
     };
   }
@@ -217,7 +259,6 @@ export class AuthService {
       where: { email },
     });
 
-    // Güvenlik için: kullanıcı yoksa bile aynı cevabı dön
     if (!user) {
       return {
         status: 'OK',
@@ -228,7 +269,7 @@ export class AuthService {
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 dakika
+    expiresAt.setMinutes(expiresAt.getMinutes() + 10);
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -239,12 +280,8 @@ export class AuthService {
     });
 
     const baseUrl = process.env.WEB_APP_BASE_URL || 'https://example.com';
-    const resetUrl = `${baseUrl.replace(
-      /\/$/,
-      '',
-    )}/reset-password?token=${token}`;
+    const resetUrl = `${baseUrl.replace(/\/$/, '')}/reset-password?token=${token}`;
 
-    // mail gönder
     await this.mailService.sendPasswordResetCode(
       email,
       `Şifrenizi sıfırlamak için aşağıdaki linke tıklayın:\n\n${resetUrl}\n\nBu link 10 dakika boyunca geçerlidir.`,
@@ -254,7 +291,6 @@ export class AuthService {
       status: 'OK',
       message:
         'Şifre sıfırlama linki e-posta adresinize gönderildi (eğer kayıtlıysa).',
-      // dev için:
       debugResetUrl: resetUrl,
     };
   }
