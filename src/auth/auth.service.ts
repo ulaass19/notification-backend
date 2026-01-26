@@ -38,7 +38,17 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
-    const { email, password, fullName } = dto;
+    const {
+      email,
+      password,
+      fullName,
+      gender,
+      city,
+      hometown,
+      zodiacSign,
+      birthYear,
+      birthDate,
+    } = dto;
 
     const existing = await this.prisma.user.findUnique({
       where: { email },
@@ -48,23 +58,31 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+
     const otp = this.generateOtp();
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 10);
 
-    /**
-     * Burada dto.role opsiyonel.
-     * - Eğer body'den role gelmezse → USER
-     * - Dev ortamında admin yaratmak için curl ile role: "ADMIN" gönderebiliriz.
-     */
+    // role opsiyonel
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const finalRole: UserRole = (dto as any).role ?? UserRole.USER;
 
-    // ✅ birthYear yoksa ama birthDate geldiyse otomatik üretelim
+    // birthDate -> Date objesine çevir (YYYY-MM-DD)
+    // DB alanın DateTime ise bunu kullan. (Sende /mobile/me çıktısında birthYear var, birthDate yoktu.
+    // Eğer Prisma'da birthDate alanın yoksa, aşağıdaki birthDateDb satırını kaldır.)
+    let birthDateDb: Date | null = null;
+    if (birthDate) {
+      const d = new Date(birthDate);
+      if (!isNaN(d.getTime())) birthDateDb = d;
+    }
+
+    // birthYear yoksa birthDate'ten üret
     const computedBirthYear =
-      (dto as any).birthYear ??
-      ((dto as any).birthDate
-        ? new Date((dto as any).birthDate).getFullYear()
-        : null);
+      typeof birthYear === 'number'
+        ? birthYear
+        : birthDateDb
+          ? birthDateDb.getFullYear()
+          : null;
 
     const user = await this.prisma.user.create({
       data: {
@@ -76,23 +94,18 @@ export class AuthService {
         emailVerificationExpiresAt: expiresAt,
         role: finalRole,
 
-        // ✅ Mobil register payload alanları (DB’de alanlar varsa kaydolur)
-        gender: (dto as any).gender ?? null,
-        city: (dto as any).city ?? null,
-        hometown: (dto as any).hometown ?? null,
-        zodiacSign: (dto as any).zodiacSign ?? null,
-
-        // DB’de birthDate DateTime ise:
-        birthDate: (dto as any).birthDate
-          ? new Date((dto as any).birthDate)
-          : null,
-
-        // DB’de birthYear Int ise:
+        // ✅ profil alanları (Prisma User modelinde varsa yaz)
+        gender: gender ?? null,
+        city: city ?? null,
+        hometown: hometown ?? null,
+        zodiacSign: zodiacSign ?? null,
         birthYear: computedBirthYear,
+
+        // Prisma'da birthDate alanın yoksa bunu SİL:
+        // birthDate: birthDateDb,
       },
     });
 
-    // mail ile OTP gönder
     await this.mailService.sendEmailVerificationCode(email, otp);
 
     const accessToken = await this.signToken(user.id, user.email!, user.role);
@@ -100,7 +113,6 @@ export class AuthService {
     return {
       status: 'REGISTERED',
       message: 'Kayıt başarılı. Lütfen e-posta doğrulama kodunuzu girin.',
-      // dev aşaması için kodu dönebilirsin, prod'da kaldır:
       debugCode: otp,
       accessToken,
       user: {
