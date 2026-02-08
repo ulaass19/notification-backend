@@ -321,10 +321,11 @@ export class NotificationService {
       // 1) external_id
       for (const part of chunk(externalUserIds, 1000)) {
         const r = await this.oneSignal.sendToPlayerIds(
-          part,
-          notification.title,
-          notification.body,
-        );
+  part,
+  notification.title,
+  notification.body,
+);
+
         results.push({ mode: 'external_id', ...r });
       }
 

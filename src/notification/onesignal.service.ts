@@ -130,7 +130,7 @@ export class OneSignalService {
       this.url,
       {
         app_id: this.appId,
-        include_player_ids: ids, // ✅
+        include_player_ids: ids,
         target_channel: 'push',
         contents: { en: body },
         headings: { en: title },
@@ -144,7 +144,6 @@ export class OneSignalService {
     );
 
     const realRecipients = res.data?.recipients ?? 0;
-
     this.logger.log(
       `📨 OneSignal playerIds env=${this.env} status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
     );
