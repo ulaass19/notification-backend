@@ -1,20 +1,20 @@
-// src/notification/notification.service.ts
 import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { OneSignalService } from './onesignal.service';
 import { Prisma, NotificationStatus } from '@prisma/client';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
-
-// ✅ SSE Stream Service
 import { NotificationStreamService } from '../notification/realtime/notification-stream.service';
 
 @Injectable()
 export class NotificationService {
+  private readonly logger = new Logger(NotificationService.name);
+
   constructor(
     private prisma: PrismaService,
     private oneSignal: OneSignalService,
@@ -65,14 +65,11 @@ export class NotificationService {
   }
 
   async createAndSendNow(dto: CreateNotificationDto) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const rawSchedule =
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       ((dto as any).scheduledAt ?? (dto as any).sendAt ?? '').trim?.() ?? '';
 
     let scheduledDate: Date | null = null;
     if (rawSchedule) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       const d = new Date(rawSchedule);
       if (!Number.isNaN(d.getTime())) scheduledDate = d;
     }
@@ -88,14 +85,10 @@ export class NotificationService {
     };
 
     if (scheduledDate && scheduledDate.getTime() > now.getTime()) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       data.sendAt = scheduledDate;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       data.status = NotificationStatus.SCHEDULED;
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       data.sendAt = scheduledDate ?? now;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       data.status = NotificationStatus.PENDING;
     }
 
@@ -161,7 +154,6 @@ export class NotificationService {
       ((dto as any).scheduledAt ?? (dto as any).sendAt ?? '').trim?.() ?? '';
 
     if (rawSchedule.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       const d = new Date(rawSchedule);
       if (!Number.isNaN(d.getTime())) {
         data.sendAt = d;
@@ -209,8 +201,10 @@ export class NotificationService {
     return updated;
   }
 
-  // ✅✅✅ External User ID ile gönderiyoruz (user.id)
+  // ✅ External User ID ile gönderiyoruz (user.id)
   async sendNowExisting(id: number) {
+    this.logger.log(`🧬 NSVC:v1 sendNowExisting called -> notifId=${id}`);
+
     const notification = await this.prisma.notification.findUnique({
       where: { id },
     });
@@ -252,11 +246,9 @@ export class NotificationService {
           continue;
 
         if (field === 'gender' && op === 'EQUALS') AND.push({ gender: value });
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         if (field === 'city' && op === 'EQUALS') AND.push({ city: value });
 
         if (field === 'interests' && op === 'CONTAINS') {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           AND.push({ interests: { has: value } as any });
         }
       }
@@ -288,6 +280,10 @@ export class NotificationService {
         throw new BadRequestException('Audience matched 0 users');
       }
 
+      this.logger.log(
+        `🧬 NSVC:v1 mode=external_user_ids users=${users.length}`,
+      );
+
       // ✅ SSE EMIT (push bağımsız)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
@@ -302,7 +298,6 @@ export class NotificationService {
       // ✅ OneSignal gönderim (chunk)
       const results: any[] = [];
       for (const part of chunk(externalUserIds, 1000)) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const r = await this.oneSignal.sendToExternalUserIds(
           part,
           notification.title,
@@ -311,17 +306,15 @@ export class NotificationService {
         results.push(r);
       }
 
-      // 🔥 KRİTİK: gerçek recipients sayısını hesapla
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      // ✅ gerçek recipients hesapla
       const totalRecipients = results.reduce((sum, r) => {
         const v = Number(r?.recipients ?? 0);
         return sum + (Number.isFinite(v) ? v : 0);
       }, 0);
 
-      // 🔥 recipients 0 ise: push eşleşmiyor → FAILED yap
       if (totalRecipients <= 0) {
         throw new BadRequestException(
-          'OneSignal recipients=0. Mobilde OneSignal.login(userId) çalışıyor mu? External ID eşleşmesi yok.',
+          'OneSignal recipients=0. Mobilde OneSignal.login(userId) çalışmıyor ya da external_id eşleşmiyor.',
         );
       }
 
@@ -351,28 +344,24 @@ export class NotificationService {
         statusAfter: NotificationStatus.SENT,
         success: true,
         error: null,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        providerId: results?.[0]?.id ?? results?.[0]?.data?.id ?? null,
+        providerId: results?.[0]?.id ?? null,
       });
 
       return {
         notification: updated,
         onesignal: results,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         recipients: totalRecipients,
         mode: 'external_user_ids',
       };
     } catch (err: any) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const errorMessage = err?.response?.data
         ? JSON.stringify(err.response.data)
-        : (err?.message ?? 'Unknown error');
+        : err?.message ?? 'Unknown error';
 
       const updated = await this.prisma.notification.update({
         where: { id },
         data: {
           status: NotificationStatus.FAILED,
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           error: errorMessage,
           retryCount: attempt,
         },
@@ -384,14 +373,12 @@ export class NotificationService {
         statusBefore: NotificationStatus.PENDING,
         statusAfter: NotificationStatus.FAILED,
         success: false,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         error: errorMessage,
       });
 
       return {
         notification: updated,
         error: 'OneSignal send failed',
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         details: errorMessage,
       };
     }

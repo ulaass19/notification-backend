@@ -1,10 +1,10 @@
-// src/notification/notification.module.ts
 import { Module } from '@nestjs/common';
 import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { OneSignalService } from './onesignal.service';
 import { NotificationScheduler } from './notification.scheduler';
+import { NotificationStreamService } from '../notification/realtime/notification-stream.service';
 
 @Module({
   imports: [],
@@ -12,8 +12,9 @@ import { NotificationScheduler } from './notification.scheduler';
   providers: [
     NotificationService,
     PrismaService,
-    OneSignalService, // 🔴 ESKİK OLAN BUYDU
-    NotificationScheduler, // cron için eklediğimiz
+    OneSignalService,
+    NotificationScheduler,
+    NotificationStreamService,
   ],
   exports: [NotificationService],
 })

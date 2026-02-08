@@ -24,10 +24,12 @@ export class OneSignalService {
     if (!this.appId || !this.apiKey) {
       this.logger.error('❌ OneSignal config eksik! .env kontrol et.');
     }
-    if (!this.enabled)
+    if (!this.enabled) {
       this.logger.warn('⚠️ OneSignal disabled (ONESIGNAL_ENABLED=false)');
-    if (this.dryRun)
+    }
+    if (this.dryRun) {
       this.logger.warn('🧪 OneSignal DRY_RUN (ONESIGNAL_DRY_RUN=true)');
+    }
   }
 
   getStatus() {
@@ -56,7 +58,7 @@ export class OneSignalService {
     return { ok: true as const };
   }
 
-  /** ✅ Segment'e gönderim (istersen kalsın) */
+  /** (opsiyonel) Segment'e gönderim */
   async sendToAll(title: string, body: string) {
     const g = this.guardBase();
     if (!g.ok) return { skipped: true, reason: g.reason };
@@ -78,36 +80,29 @@ export class OneSignalService {
       },
     );
 
+    const realRecipients = res.data?.recipients ?? 0;
+
     this.logger.log(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      `📨 OneSignal sendToAll (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${res.data?.recipients ?? '?'}`,
+      `🧬 OSVC:v1 📨 sendToAll (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return res.data;
   }
 
   /**
-   * ✅ DOĞRU YOL: External User ID ile gönder
-   * - Mobilde OneSignal.login(userId) çağrılmalı
-   * - DB'de deviceId tutmak zorunda değilsin
+   * ✅ TEK DOĞRU YOL:
+   * External User ID ile gönderim (OneSignal.login(userId) şart)
    */
   async sendToExternalUserIds(
     externalIds: string[],
     title: string,
     body: string,
   ) {
-    if (!this.enabled)
+    const g = this.guardBase();
+    if (!g.ok)
       return {
         skipped: true,
-        reason: 'disabled',
-        recipients: 0,
-        externalIds: [],
-      };
-    if (!this.appId || !this.apiKey)
-      return {
-        skipped: true,
-        reason: 'config-missing',
+        reason: g.reason,
         recipients: 0,
         externalIds: [],
       };
@@ -118,7 +113,7 @@ export class OneSignalService {
       .filter(Boolean);
 
     if (!ids.length) {
-      this.logger.warn('⚠️ sendToExternalUserIds: recipient yok (ids boş)');
+      this.logger.warn('🧬 OSVC:v1 ⚠️ sendToExternalUserIds: ids boş');
       return {
         skipped: true,
         reason: 'no-recipients',
@@ -129,7 +124,7 @@ export class OneSignalService {
 
     if (this.dryRun) {
       this.logger.log(
-        `🧪 [DRY-RUN] sendToExternalUserIds → ${ids.length} external_ids`,
+        `🧬 OSVC:v1 🧪 [DRY-RUN] sendToExternalUserIds -> ${ids.length} external_ids`,
       );
       return {
         skipped: true,
@@ -144,16 +139,14 @@ export class OneSignalService {
       {
         app_id: this.appId,
 
-        // ✅ External ID hedefleme (User model)
+        // ✅ External ID hedefleme
         include_aliases: { external_id: ids },
 
-        // ✅ push'a zorla (multi-channel varsa şart)
+        // ✅ push'a zorla
         target_channel: 'push',
 
         contents: { en: body },
         headings: { en: title },
-        // (opsiyonel) test için:
-        // priority: 10,
       },
       {
         headers: {
@@ -163,95 +156,12 @@ export class OneSignalService {
       },
     );
 
-    // 🔥 KRİTİK: gerçek recipients değerini logla
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const realRecipients = res.data?.recipients ?? 0;
 
     this.logger.log(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      `📨 OneSignal sendToExternalUserIds (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
+      `🧬 OSVC:v1 📨 sendToExternalUserIds (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return
     return { ...res.data, externalIds: ids, recipients: realRecipients };
-  }
-
-  /**
-   * (İstersen kalsın) Subscription ID ile gönderim
-   * NOT: Bunu kullanacaksan DB’de gerçekten subscription id tuttuğundan emin ol.
-   */
-  async sendToSubscriptionIds(
-    subscriptionIds: string[],
-    title: string,
-    body: string,
-  ) {
-    if (!this.enabled)
-      return {
-        skipped: true,
-        reason: 'disabled',
-        recipients: 0,
-        subscriptionIds: [],
-      };
-    if (!this.appId || !this.apiKey)
-      return {
-        skipped: true,
-        reason: 'config-missing',
-        recipients: 0,
-        subscriptionIds: [],
-      };
-
-    const ids = (subscriptionIds ?? [])
-      .map(String)
-      .map((x) => x.trim())
-      .filter(Boolean);
-
-    if (!ids.length) {
-      this.logger.warn('⚠️ sendToSubscriptionIds: recipient yok (ids boş)');
-      return {
-        skipped: true,
-        reason: 'no-recipients',
-        recipients: 0,
-        subscriptionIds: [],
-      };
-    }
-
-    if (this.dryRun) {
-      this.logger.log(
-        `🧪 [DRY-RUN] sendToSubscriptionIds → ${ids.length} subscriptions`,
-      );
-      return {
-        skipped: true,
-        dryRun: true,
-        recipients: ids.length,
-        subscriptionIds: ids,
-      };
-    }
-
-    const res = await axios.post(
-      this.url,
-      {
-        app_id: this.appId,
-        include_subscription_ids: ids,
-        target_channel: 'push',
-        contents: { en: body },
-        headings: { en: title },
-      },
-      {
-        headers: {
-          Authorization: `Basic ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-    const realRecipients = res.data?.recipients ?? 0;
-    this.logger.log(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      `📨 OneSignal sendToSubscriptionIds (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment
-    return { ...res.data, subscriptionIds: ids, recipients: realRecipients };
   }
 }
