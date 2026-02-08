@@ -32,7 +32,6 @@ export class OneSignalService {
 
   getStatus() {
     const hasConfig = Boolean(this.appId && this.apiKey);
-
     let status: 'OK' | 'DISABLED' | 'DRY_RUN' | 'CONFIG_MISSING';
     if (!hasConfig) status = 'CONFIG_MISSING';
     else if (!this.enabled) status = 'DISABLED';

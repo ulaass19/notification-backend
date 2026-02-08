@@ -9,8 +9,6 @@ import { CreateNotificationDto } from './dto/create-notification.dto';
 import { OneSignalService } from './onesignal.service';
 import { Prisma, NotificationStatus } from '@prisma/client';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
-
-// ✅ SSE Stream Service
 import { NotificationStreamService } from '../notification/realtime/notification-stream.service';
 
 @Injectable()
@@ -61,7 +59,6 @@ export class NotificationService {
   async delete(id: number) {
     const exists = await this.prisma.notification.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('Notification not found');
-
     await this.prisma.notification.delete({ where: { id } });
     return { success: true };
   }
@@ -203,14 +200,13 @@ export class NotificationService {
     return updated;
   }
 
-  // ✅✅✅ External ID + fallback subscriptionId ile gönder (push gittiği an SENT + inbox yaz)
+  // ✅ FINAL: external_id dene, recipients=0 ise subscriptionId fallback yap
   async sendNowExisting(id: number) {
-    this.logger.log(`[sendNowExisting] notifId=${id}`);
+    this.logger.log(`[sendNowExisting] version=FALLBACK_SENT_FIX notifId=${id}`);
 
     const notification = await this.prisma.notification.findUnique({
       where: { id },
     });
-
     if (!notification) throw new NotFoundException('Notification not found');
 
     if (notification.status === NotificationStatus.SENT) {
@@ -233,18 +229,13 @@ export class NotificationService {
 
     const buildWhereFromRules = (rules: any[]): Prisma.UserWhereInput => {
       const AND: Prisma.UserWhereInput[] = [];
-
       for (const r of rules ?? []) {
         const field = String(r?.field ?? '');
         const op = String(r?.operator ?? '');
         const value = r?.value;
 
         if (!field || !op) continue;
-        if (
-          value === undefined ||
-          value === null ||
-          String(value).trim() === ''
-        )
+        if (value === undefined || value === null || String(value).trim() === '')
           continue;
 
         if (field === 'gender' && op === 'EQUALS') AND.push({ gender: value });
@@ -254,7 +245,6 @@ export class NotificationService {
           AND.push({ interests: { has: value } as any });
         }
       }
-
       return AND.length ? { AND } : {};
     };
 
@@ -265,13 +255,12 @@ export class NotificationService {
       });
 
       let where: Prisma.UserWhereInput = { isActive: true };
-
       if (link?.audience?.rules) {
         const rulesWhere = buildWhereFromRules(link.audience.rules as any[]);
         where = { ...where, ...rulesWhere };
       }
 
-      // ✅ deviceId de çekiyoruz (subscriptionId)
+      // 🔥 KRİTİK: deviceId (subscriptionId) de çekiyoruz
       const users = await this.prisma.user.findMany({
         where,
         select: { id: true, deviceId: true },
@@ -281,9 +270,7 @@ export class NotificationService {
         throw new BadRequestException('Audience matched 0 users');
       }
 
-      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
-
-      // ✅ SSE EMIT (push’tan bağımsız)
+      // ✅ SSE (push bağımsız)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
           type: 'notification',
@@ -294,9 +281,17 @@ export class NotificationService {
         });
       }
 
+      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
+
+      const usersWithSub = users
+        .filter((u: any) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0)
+        .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
+
+      const subscriptionIds = usersWithSub.map((x) => x.subId);
+
       const results: any[] = [];
 
-      // 1) external_id ile gönder
+      // 1) external_id dene
       for (const part of chunk(externalUserIds, 1000)) {
         const r = await this.oneSignal.sendToExternalUserIds(
           part,
@@ -313,70 +308,53 @@ export class NotificationService {
       let finalMode: 'external_id' | 'subscription_fallback' = 'external_id';
       let finalRecipients = externalRecipients;
 
-      // 2) fallback: subscriptionId (deviceId) ile gönder
-      if (externalRecipients <= 0) {
-        const usersWithSub = users
-          .filter(
-            (u: any) =>
-              typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
-          )
-          .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
-
-        const subscriptionIds = usersWithSub.map((x) => x.subId);
-
-        if (subscriptionIds.length > 0) {
-          const fb: any[] = [];
-          for (const part of chunk(subscriptionIds, 2000)) {
-            const r = await this.oneSignal.sendToSubscriptionIds(
-              part,
-              notification.title,
-              notification.body,
-            );
-            fb.push({ mode: 'subscription_fallback', ...r });
-          }
-
-          const fallbackRecipients = fb.reduce(
-            (sum, r) => sum + Number(r?.recipients ?? 0),
-            0,
+      // 2) fallback
+      if (externalRecipients <= 0 && subscriptionIds.length > 0) {
+        const fb: any[] = [];
+        for (const part of chunk(subscriptionIds, 2000)) {
+          const r = await this.oneSignal.sendToSubscriptionIds(
+            part,
+            notification.title,
+            notification.body,
           );
+          fb.push({ mode: 'subscription_fallback', ...r });
+        }
 
-          results.push(...fb);
+        const fallbackRecipients = fb.reduce(
+          (sum, r) => sum + Number(r?.recipients ?? 0),
+          0,
+        );
 
-          if (fallbackRecipients > 0) {
-            finalMode = 'subscription_fallback';
-            finalRecipients = fallbackRecipients;
+        results.push(...fb);
 
-            // ✅ INBOX: fallback ile gerçekten push giden user’lar
-            await this.prisma.userNotification.createMany({
-              data: usersWithSub.map((x) => ({
-                userId: x.id,
-                notificationId: notification.id,
-              })),
-              skipDuplicates: true,
-            });
-          }
+        if (fallbackRecipients > 0) {
+          finalMode = 'subscription_fallback';
+          finalRecipients = fallbackRecipients;
         }
       }
 
-      // ✅ external_id başarılıysa inbox: tüm audience users
-      if (finalMode === 'external_id' && finalRecipients > 0) {
-        await this.prisma.userNotification.createMany({
-          data: users.map((u) => ({
-            userId: u.id,
-            notificationId: notification.id,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      // 3) hala 0 ise fail
       if (finalRecipients <= 0) {
         throw new BadRequestException(
           'OneSignal recipients=0. External ID eşleşmiyor ve subscriptionId yok/boş.',
         );
       }
 
-      // ✅ artık BAŞARILI: SENT + sentAt set
+      // ✅ INBOX KAYDI
+      // fallback ise sadece subscriptionId olanlara yaz, değilse tüm audience users
+      const usersToLog =
+        finalMode === 'subscription_fallback'
+          ? usersWithSub.map((x) => x.id)
+          : users.map((u) => u.id);
+
+      await this.prisma.userNotification.createMany({
+        data: usersToLog.map((userId) => ({
+          userId,
+          notificationId: notification.id,
+        })),
+        skipDuplicates: true,
+      });
+
+      // ✅ SENT
       const updated = await this.prisma.notification.update({
         where: { id },
         data: {
@@ -404,9 +382,10 @@ export class NotificationService {
         mode: finalMode,
       };
     } catch (err: any) {
-      const errorMessage = err?.response?.data
-        ? JSON.stringify(err.response.data)
-        : (err?.message ?? 'Unknown error');
+      const errorMessage =
+        err?.response?.data
+          ? JSON.stringify(err.response.data)
+          : err?.message ?? 'Unknown error';
 
       const updated = await this.prisma.notification.update({
         where: { id },
@@ -438,7 +417,6 @@ export class NotificationService {
     const notification = await this.prisma.notification.findUnique({
       where: { id },
     });
-
     if (!notification) throw new NotFoundException('Notification not found');
 
     return this.prisma.notification.update({
