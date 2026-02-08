@@ -24,14 +24,18 @@ export class NotificationController {
     private readonly oneSignalService: OneSignalService,
   ) {}
 
-  // Şimdilik herhangi JWT'li kullanıcı erişebilsin; ileride admin role ekleriz
+  // ✅ Audience bazlı (mevcut)
   @UseGuards(JwtAuthGuard)
   @Post()
   async createAndSend(@Body() body: CreateNotificationDto) {
-    // Artık burada:
-    // - scheduledAt doluysa → sadece DB'ye planlı kayıt atıyoruz (SCHEDULED)
-    // - boşsa → hemen gönderiyoruz (SENT / FAILED)
     return this.notificationService.createAndSendNow(body);
+  }
+
+  // ✅ Kişiye özel / user list
+  @UseGuards(JwtAuthGuard)
+  @Post('send-to-users')
+  async sendToUsers(@Body() body: any) {
+    return this.notificationService.createAndSendToUsersNow(body);
   }
 
   @UseGuards(JwtAuthGuard)

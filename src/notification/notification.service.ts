@@ -64,6 +64,226 @@ export class NotificationService {
     return { success: true };
   }
 
+  /**
+   * ✅ Kişiye Özel Bildirim
+   * POST /admin/notifications/send-to-users
+   * Body: { title, body, userIds?: number[], emails?: string[], scheduledAt?: string }
+   */
+  async createAndSendToUsersNow(dto: any) {
+    const rawSchedule = (dto.scheduledAt ?? dto.sendAt ?? '').trim?.() ?? '';
+
+    let scheduledDate: Date | null = null;
+    if (rawSchedule) {
+      const d = new Date(rawSchedule);
+      if (!Number.isNaN(d.getTime())) scheduledDate = d;
+    }
+
+    const now = new Date();
+
+    // ✅ validate inputs
+    const userIds: number[] = Array.isArray(dto?.userIds)
+      ? dto.userIds
+          .map((x: any) => Number(x))
+          .filter((n: number) => Number.isFinite(n))
+      : [];
+
+    const emails: string[] = Array.isArray(dto?.emails)
+      ? dto.emails
+          .map((x: any) => String(x).trim())
+          .filter((s: string) => s.length > 0)
+      : [];
+
+    if (!dto?.title?.trim?.() || !dto?.body?.trim?.()) {
+      throw new BadRequestException('title/body zorunlu');
+    }
+
+    if (userIds.length === 0 && emails.length === 0) {
+      throw new BadRequestException('userIds veya emails zorunlu');
+    }
+
+    // ✅ create notification
+    const data: any = {
+      title: dto.title,
+      body: dto.body,
+      sentAt: null,
+      error: null,
+      retryCount: 0,
+    };
+
+    if (scheduledDate && scheduledDate.getTime() > now.getTime()) {
+      data.sendAt = scheduledDate;
+      data.status = NotificationStatus.SCHEDULED;
+    } else {
+      data.sendAt = scheduledDate ?? now;
+      data.status = NotificationStatus.PENDING;
+    }
+
+    const notification = await this.prisma.notification.create({ data });
+
+    // scheduled ise sadece kaydet
+    if (notification.status === NotificationStatus.SCHEDULED) {
+      return { notification, scheduled: true };
+    }
+
+    // ✅ send now flow (player_id only)
+    this.logger.log(
+      `[createAndSendToUsersNow] notifId=${notification.id} userIds=${userIds.length} emails=${emails.length}`,
+    );
+
+    const attempt = (notification.retryCount ?? 0) + 1;
+
+    await this.prisma.notification.update({
+      where: { id: notification.id },
+      data: { status: NotificationStatus.PENDING, retryCount: attempt },
+    });
+
+    const isUuid = (v: string) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        v,
+      );
+
+    try {
+      const users = await this.prisma.user.findMany({
+        where: {
+          isActive: true,
+          deviceId: { not: null },
+          OR: [
+            userIds.length ? { id: { in: userIds } } : undefined,
+            emails.length ? { email: { in: emails } } : undefined,
+          ].filter(Boolean) as any,
+        },
+        select: { id: true, deviceId: true },
+      });
+
+      if (users.length === 0) {
+        throw new BadRequestException(
+          'Hedef kullanıcı bulunamadı (user yok veya deviceId yok)',
+        );
+      }
+
+      const usersWithPlayerId = users
+        .map((u) => ({
+          userId: u.id,
+          playerId: typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
+        }))
+        .filter((x) => x.playerId.length > 0)
+        .filter((x) => isUuid(x.playerId));
+
+      const invalidCount =
+        users.filter(
+          (u) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
+        ).length - usersWithPlayerId.length;
+
+      this.logger.log(
+        `[createAndSendToUsersNow] matchedUsers=${users.length} validPlayerId=${usersWithPlayerId.length} invalidOrEmptyDeviceId=${invalidCount}`,
+      );
+
+      if (usersWithPlayerId.length === 0) {
+        throw new BadRequestException(
+          `No valid OneSignal player_id (UUID) found. matched=${users.length}`,
+        );
+      }
+
+      // ✅ realtime stream (inbox / socket)
+      for (const u of users) {
+        this.stream.emitToUser(String(u.id), {
+          type: 'notification',
+          id: notification.id,
+          title: notification.title,
+          body: notification.body,
+          data: { screen: 'DailyStatus', notificationId: notification.id },
+        });
+      }
+
+      const playerIds = usersWithPlayerId.map((x) => x.playerId);
+
+      const r = await this.oneSignal.sendToPlayerIds(
+        playerIds,
+        notification.title,
+        notification.body,
+      );
+
+      const recipientsRaw = r?.recipients;
+      const recipients =
+        typeof recipientsRaw === 'number'
+          ? recipientsRaw
+          : Number(recipientsRaw ?? 0);
+
+      const providerId = r?.id ?? null;
+
+      if (!providerId) {
+        throw new BadRequestException(
+          `OneSignal response has no id. Response=${JSON.stringify(r)}`,
+        );
+      }
+
+      // ✅ inbox mapping (metrics)
+      await this.prisma.userNotification.createMany({
+        data: usersWithPlayerId.map((x) => ({
+          userId: x.userId,
+          notificationId: notification.id,
+        })),
+        skipDuplicates: true,
+      });
+
+      const updated = await this.prisma.notification.update({
+        where: { id: notification.id },
+        data: {
+          status: NotificationStatus.SENT,
+          sentAt: new Date(),
+          error: null,
+          retryCount: attempt,
+        },
+      });
+
+      await this.logSendAttempt({
+        notificationId: notification.id,
+        attempt,
+        statusBefore: NotificationStatus.PENDING,
+        statusAfter: NotificationStatus.SENT,
+        success: true,
+        error: null,
+        providerId,
+      });
+
+      return {
+        notification: updated,
+        onesignal: r,
+        recipients,
+        mode: 'player_ids_direct_users',
+        targetedUsers: usersWithPlayerId.length,
+      };
+    } catch (err: any) {
+      const errorMessage = err?.response?.data
+        ? JSON.stringify(err.response.data)
+        : (err?.message ?? 'Unknown error');
+
+      const updated = await this.prisma.notification.update({
+        where: { id: notification.id },
+        data: {
+          status: NotificationStatus.FAILED,
+          error: errorMessage,
+          retryCount: attempt,
+        },
+      });
+
+      await this.logSendAttempt({
+        notificationId: notification.id,
+        attempt,
+        statusBefore: NotificationStatus.PENDING,
+        statusAfter: NotificationStatus.FAILED,
+        success: false,
+        error: errorMessage,
+      });
+
+      return {
+        notification: updated,
+        error: 'OneSignal send failed',
+        details: errorMessage,
+      };
+    }
+  }
+
   async createAndSendNow(dto: CreateNotificationDto) {
     const rawSchedule =
       ((dto as any).scheduledAt ?? (dto as any).sendAt ?? '').trim?.() ?? '';
@@ -140,14 +360,12 @@ export class NotificationService {
       };
     }
 
-    // ✅ Gönderilen (hedeflenen/inbox): UserNotification count
     const sentGroups = await this.prisma.userNotification.groupBy({
       by: ['notificationId'],
       where: { notificationId: { in: ids } },
       _count: { _all: true },
     });
 
-    // ✅ Açılma: openedAt not null
     const openGroups = await this.prisma.userNotification.groupBy({
       by: ['notificationId'],
       where: {
@@ -167,10 +385,7 @@ export class NotificationService {
 
     const itemsWithMetrics = items.map((n) => {
       const sentCount = sentMap.get(n.id) ?? 0;
-
-      // ✅ Teslim: inbox’a düştü olarak stabil ölçüm
       const deliveredCount = sentCount;
-
       const openCount = openMap.get(n.id) ?? 0;
 
       return {
