@@ -287,12 +287,19 @@ export class NotificationService {
 
       const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
 
+      const isUuid = (v: string) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          v,
+        );
+
       const usersWithSub = users
-        .filter(
-          (u: any) =>
-            typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
-        )
-        .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
+        .map((u: any) => ({
+          id: u.id,
+          raw: typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
+        }))
+        .filter((x: any) => x.raw.length > 0)
+        .filter((x: any) => isUuid(x.raw)) // ✅ OneSignal include_player_ids UUID ister
+        .map((x: any) => ({ id: x.id, subId: x.raw }));
 
       const subscriptionIds = usersWithSub.map((x) => x.subId);
 
@@ -302,6 +309,18 @@ export class NotificationService {
       if (users[0]) {
         this.logger.log(
           `[sendNowExisting] sampleUser id=${users[0].id} deviceId=${users[0].deviceId ?? 'null'}`,
+        );
+      }
+
+      const invalidDeviceIds = users
+        .map((u: any) =>
+          typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
+        )
+        .filter((x: string) => x.length > 0 && !isUuid(x));
+
+      if (invalidDeviceIds.length > 0) {
+        this.logger.warn(
+          `[sendNowExisting] invalid deviceIds skipped count=${invalidDeviceIds.length} sample=${invalidDeviceIds[0]}`,
         );
       }
 
@@ -321,10 +340,10 @@ export class NotificationService {
       // 1) external_id
       for (const part of chunk(externalUserIds, 1000)) {
         const r = await this.oneSignal.sendToPlayerIds(
-  part,
-  notification.title,
-  notification.body,
-);
+          part,
+          notification.title,
+          notification.body,
+        );
 
         results.push({ mode: 'external_id', ...r });
       }
