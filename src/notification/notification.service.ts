@@ -200,9 +200,10 @@ export class NotificationService {
     return updated;
   }
 
-  // ✅ FINAL: external_id dene, recipients=0 ise subscriptionId fallback yap
   async sendNowExisting(id: number) {
-    this.logger.log(`[sendNowExisting] version=FALLBACK_SENT_FIX notifId=${id}`);
+    this.logger.log(
+      `[sendNowExisting] version=DEVICEID_REFRESH_FIX notifId=${id}`,
+    );
 
     const notification = await this.prisma.notification.findUnique({
       where: { id },
@@ -229,14 +230,19 @@ export class NotificationService {
 
     const buildWhereFromRules = (rules: any[]): Prisma.UserWhereInput => {
       const AND: Prisma.UserWhereInput[] = [];
+
       for (const r of rules ?? []) {
         const field = String(r?.field ?? '');
         const op = String(r?.operator ?? '');
-        const value = r?.value;
+        const raw = r?.value;
 
         if (!field || !op) continue;
-        if (value === undefined || value === null || String(value).trim() === '')
-          continue;
+        if (raw === undefined || raw === null) continue;
+
+        const value =
+          typeof raw === 'string' ? raw.trim() : raw;
+
+        if (value === '' || value === null) continue;
 
         if (field === 'gender' && op === 'EQUALS') AND.push({ gender: value });
         if (field === 'city' && op === 'EQUALS') AND.push({ city: value });
@@ -245,6 +251,7 @@ export class NotificationService {
           AND.push({ interests: { has: value } as any });
         }
       }
+
       return AND.length ? { AND } : {};
     };
 
@@ -255,22 +262,51 @@ export class NotificationService {
       });
 
       let where: Prisma.UserWhereInput = { isActive: true };
+
       if (link?.audience?.rules) {
         const rulesWhere = buildWhereFromRules(link.audience.rules as any[]);
         where = { ...where, ...rulesWhere };
       }
 
-      // 🔥 KRİTİK: deviceId (subscriptionId) de çekiyoruz
-      const users = await this.prisma.user.findMany({
+      // ✅ önce sadece id çek (audience match)
+      const matched = await this.prisma.user.findMany({
         where,
-        select: { id: true, deviceId: true },
+        select: { id: true },
       });
 
-      if (users.length === 0) {
+      if (matched.length === 0) {
         throw new BadRequestException('Audience matched 0 users');
       }
 
-      // ✅ SSE (push bağımsız)
+      const matchedIds = matched.map((u) => u.id);
+
+      // 🔥 KRİTİK FIX: deviceId’leri ikinci query ile “garanti” çek
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: matchedIds } },
+        select: { id: true, deviceId: true },
+      });
+
+      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
+
+      const usersWithSub = users
+        .filter(
+          (u: any) =>
+            typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
+        )
+        .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
+
+      const subscriptionIds = usersWithSub.map((x) => x.subId);
+
+      this.logger.log(
+        `[sendNowExisting] matchedUsers=${users.length} withDeviceId=${usersWithSub.length}`,
+      );
+      if (users[0]) {
+        this.logger.log(
+          `[sendNowExisting] sampleUser id=${users[0].id} deviceId=${users[0].deviceId ?? 'null'}`,
+        );
+      }
+
+      // ✅ SSE (push’tan bağımsız)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
           type: 'notification',
@@ -281,17 +317,9 @@ export class NotificationService {
         });
       }
 
-      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
-
-      const usersWithSub = users
-        .filter((u: any) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0)
-        .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
-
-      const subscriptionIds = usersWithSub.map((x) => x.subId);
-
       const results: any[] = [];
 
-      // 1) external_id dene
+      // 1) external_id
       for (const part of chunk(externalUserIds, 1000)) {
         const r = await this.oneSignal.sendToExternalUserIds(
           part,
@@ -308,7 +336,7 @@ export class NotificationService {
       let finalMode: 'external_id' | 'subscription_fallback' = 'external_id';
       let finalRecipients = externalRecipients;
 
-      // 2) fallback
+      // 2) subscription fallback
       if (externalRecipients <= 0 && subscriptionIds.length > 0) {
         const fb: any[] = [];
         for (const part of chunk(subscriptionIds, 2000)) {
@@ -335,12 +363,11 @@ export class NotificationService {
 
       if (finalRecipients <= 0) {
         throw new BadRequestException(
-          'OneSignal recipients=0. External ID eşleşmiyor ve subscriptionId yok/boş.',
+          `OneSignal recipients=0. External ID eşleşmiyor ve subscriptionId yok/boş. (matched=${users.length}, withDeviceId=${usersWithSub.length})`,
         );
       }
 
-      // ✅ INBOX KAYDI
-      // fallback ise sadece subscriptionId olanlara yaz, değilse tüm audience users
+      // ✅ INBOX
       const usersToLog =
         finalMode === 'subscription_fallback'
           ? usersWithSub.map((x) => x.id)
@@ -354,7 +381,6 @@ export class NotificationService {
         skipDuplicates: true,
       });
 
-      // ✅ SENT
       const updated = await this.prisma.notification.update({
         where: { id },
         data: {
