@@ -281,15 +281,15 @@ export class NotificationService {
       const usersWithPlayerId = users
         .map((u) => ({
           userId: u.id,
-          playerId:
-            typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
+          playerId: typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
         }))
         .filter((x) => x.playerId.length > 0)
         .filter((x) => isUuid(x.playerId));
 
       const invalidCount =
-        users.filter((u) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0)
-          .length - usersWithPlayerId.length;
+        users.filter(
+          (u) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
+        ).length - usersWithPlayerId.length;
 
       this.logger.log(
         `[sendNowExisting] matchedUsers=${users.length} withValidPlayerId=${usersWithPlayerId.length} invalidOrEmptyDeviceId=${invalidCount}`,
@@ -320,12 +320,26 @@ export class NotificationService {
         notification.body,
       );
 
-      const recipients = Number((r as any)?.recipients ?? 0);
+      const recipientsRaw = r?.recipients;
+      const recipients =
+        typeof recipientsRaw === 'number'
+          ? recipientsRaw
+          : Number(recipientsRaw ?? 0);
 
-      // ✅ OneSignal bazen 200 dönüp recipients=0 dönebilir
-      if (!Number.isFinite(recipients) || recipients <= 0) {
+      // OneSignal bazen recipients=0 döndürse bile notification accepted olabilir.
+      // Bu yüzden bunu hard-fail yapmıyoruz; sadece uyarı logluyoruz.
+      const providerId = r?.id ?? null;
+
+      if (!providerId) {
         throw new BadRequestException(
-          `OneSignal recipients=0 (player_id). deviceId eşleşmiyor veya kullanıcılar unsubscribed olabilir.`,
+          `OneSignal response has no id. Response=${JSON.stringify(r)}`,
+        );
+      }
+
+      if (!Number.isFinite(recipients) || recipients <= 0) {
+        this.logger.warn(
+          `[sendNowExisting] OneSignal accepted but recipients=${recipients}. ` +
+            `Will mark SENT anyway. (playerIds=${usersWithPlayerId.length})`,
         );
       }
 
@@ -355,7 +369,7 @@ export class NotificationService {
         statusAfter: NotificationStatus.SENT,
         success: true,
         error: null,
-        providerId: (r as any)?.id ?? null,
+        providerId: r?.id ?? null,
       });
 
       return {
