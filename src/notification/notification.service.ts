@@ -200,10 +200,14 @@ export class NotificationService {
     return updated;
   }
 
+  /**
+   * ✅ TEK KAYNAK: OneSignal player_id = User.deviceId (UUID)
+   * - external_id / fallback vs. KALDIRILDI (karışıklık yaratıyordu)
+   * - sadece UUID olan deviceId’ler hedeflenir
+   * - başarılıysa SENT + userNotification yazılır
+   */
   async sendNowExisting(id: number) {
-    this.logger.log(
-      `[sendNowExisting] version=DEVICEID_REFRESH_FIX notifId=${id}`,
-    );
+    this.logger.log(`[sendNowExisting] mode=PLAYER_ID_ONLY notifId=${id}`);
 
     const notification = await this.prisma.notification.findUnique({
       where: { id },
@@ -221,12 +225,10 @@ export class NotificationService {
       data: { status: NotificationStatus.PENDING, retryCount: attempt },
     });
 
-    const chunk = <T>(arr: T[], size = 1000) => {
-      const out: T[][] = [];
-      for (let i = 0; i < arr.length; i += size)
-        out.push(arr.slice(i, i + size));
-      return out;
-    };
+    const isUuid = (v: string) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        v,
+      );
 
     const buildWhereFromRules = (rules: any[]): Prisma.UserWhereInput => {
       const AND: Prisma.UserWhereInput[] = [];
@@ -240,7 +242,6 @@ export class NotificationService {
         if (raw === undefined || raw === null) continue;
 
         const value = typeof raw === 'string' ? raw.trim() : raw;
-
         if (value === '' || value === null) continue;
 
         if (field === 'gender' && op === 'EQUALS') AND.push({ gender: value });
@@ -261,66 +262,42 @@ export class NotificationService {
       });
 
       let where: Prisma.UserWhereInput = { isActive: true };
-
       if (link?.audience?.rules) {
         const rulesWhere = buildWhereFromRules(link.audience.rules as any[]);
         where = { ...where, ...rulesWhere };
       }
 
-      // ✅ önce sadece id çek (audience match)
-      const matched = await this.prisma.user.findMany({
-        where,
-        select: { id: true },
-      });
-
-      if (matched.length === 0) {
-        throw new BadRequestException('Audience matched 0 users');
-      }
-
-      const matchedIds = matched.map((u) => u.id);
-
-      // 🔥 KRİTİK FIX: deviceId’leri ikinci query ile “garanti” çek
+      // ✅ Audience match + deviceId çek
       const users = await this.prisma.user.findMany({
-        where: { id: { in: matchedIds } },
+        where,
         select: { id: true, deviceId: true },
       });
 
-      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
-
-      const isUuid = (v: string) =>
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-          v,
-        );
-
-      const usersWithSub = users
-        .map((u: any) => ({
-          id: u.id,
-          raw: typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
-        }))
-        .filter((x: any) => x.raw.length > 0)
-        .filter((x: any) => isUuid(x.raw)) // ✅ OneSignal include_player_ids UUID ister
-        .map((x: any) => ({ id: x.id, subId: x.raw }));
-
-      const subscriptionIds = usersWithSub.map((x) => x.subId);
-
-      this.logger.log(
-        `[sendNowExisting] matchedUsers=${users.length} withDeviceId=${usersWithSub.length}`,
-      );
-      if (users[0]) {
-        this.logger.log(
-          `[sendNowExisting] sampleUser id=${users[0].id} deviceId=${users[0].deviceId ?? 'null'}`,
-        );
+      if (users.length === 0) {
+        throw new BadRequestException('Audience matched 0 users');
       }
 
-      const invalidDeviceIds = users
-        .map((u: any) =>
-          typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
-        )
-        .filter((x: string) => x.length > 0 && !isUuid(x));
+      // ✅ UUID player_id filtre
+      const usersWithPlayerId = users
+        .map((u) => ({
+          userId: u.id,
+          playerId:
+            typeof u.deviceId === 'string' ? u.deviceId.trim() : '',
+        }))
+        .filter((x) => x.playerId.length > 0)
+        .filter((x) => isUuid(x.playerId));
 
-      if (invalidDeviceIds.length > 0) {
-        this.logger.warn(
-          `[sendNowExisting] invalid deviceIds skipped count=${invalidDeviceIds.length} sample=${invalidDeviceIds[0]}`,
+      const invalidCount =
+        users.filter((u) => typeof u.deviceId === 'string' && u.deviceId.trim().length > 0)
+          .length - usersWithPlayerId.length;
+
+      this.logger.log(
+        `[sendNowExisting] matchedUsers=${users.length} withValidPlayerId=${usersWithPlayerId.length} invalidOrEmptyDeviceId=${invalidCount}`,
+      );
+
+      if (usersWithPlayerId.length === 0) {
+        throw new BadRequestException(
+          `No valid OneSignal player_id (UUID) found. matched=${users.length}`,
         );
       }
 
@@ -335,66 +312,27 @@ export class NotificationService {
         });
       }
 
-      const results: any[] = [];
+      // ✅ OneSignal push (player_ids)
+      const playerIds = usersWithPlayerId.map((x) => x.playerId);
+      const r = await this.oneSignal.sendToPlayerIds(
+        playerIds,
+        notification.title,
+        notification.body,
+      );
 
-      // 1) external_id
-      for (const part of chunk(externalUserIds, 1000)) {
-        const r = await this.oneSignal.sendToPlayerIds(
-          part,
-          notification.title,
-          notification.body,
-        );
+      const recipients = Number((r as any)?.recipients ?? 0);
 
-        results.push({ mode: 'external_id', ...r });
-      }
-
-      const externalRecipients = results
-        .filter((x) => x?.mode === 'external_id')
-        .reduce((sum, r) => sum + Number(r?.recipients ?? 0), 0);
-
-      let finalMode: 'external_id' | 'subscription_fallback' = 'external_id';
-      let finalRecipients = externalRecipients;
-
-      // 2) subscription fallback
-      if (externalRecipients <= 0 && subscriptionIds.length > 0) {
-        const fb: any[] = [];
-        for (const part of chunk(subscriptionIds, 2000)) {
-          const r = await this.oneSignal.sendToPlayerIds(
-            part,
-            notification.title,
-            notification.body,
-          );
-          fb.push({ mode: 'subscription_fallback', ...r });
-        }
-
-        const fallbackRecipients = fb.reduce(
-          (sum, r) => sum + Number(r?.recipients ?? 0),
-          0,
-        );
-
-        results.push(...fb);
-
-        if (fallbackRecipients > 0) {
-          finalMode = 'subscription_fallback';
-          finalRecipients = fallbackRecipients;
-        }
-      }
-
-      if (finalRecipients <= 0) {
+      // ✅ OneSignal bazen 200 dönüp recipients=0 dönebilir
+      if (!Number.isFinite(recipients) || recipients <= 0) {
         throw new BadRequestException(
-          `OneSignal recipients=0. External ID eşleşmiyor ve subscriptionId yok/boş. (matched=${users.length}, withDeviceId=${usersWithSub.length})`,
+          `OneSignal recipients=0 (player_id). deviceId eşleşmiyor veya kullanıcılar unsubscribed olabilir.`,
         );
       }
 
-      // ✅ INBOX
-      const usersToLog =
-        finalMode === 'subscription_fallback'
-          ? usersWithSub.map((x) => x.id)
-          : users.map((u) => u.id);
-
+      // ✅ INBOX kayıt (sadece hedeflediklerimiz)
       await this.prisma.userNotification.createMany({
-        data: usersToLog.map((userId) => ({
-          userId,
+        data: usersWithPlayerId.map((x) => ({
+          userId: x.userId,
           notificationId: notification.id,
         })),
         skipDuplicates: true,
@@ -417,14 +355,14 @@ export class NotificationService {
         statusAfter: NotificationStatus.SENT,
         success: true,
         error: null,
-        providerId: results?.find((x) => x?.id)?.id ?? null,
+        providerId: (r as any)?.id ?? null,
       });
 
       return {
         notification: updated,
-        onesignal: results,
-        recipients: finalRecipients,
-        mode: finalMode,
+        onesignal: r,
+        recipients,
+        mode: 'player_ids',
       };
     } catch (err: any) {
       const errorMessage = err?.response?.data

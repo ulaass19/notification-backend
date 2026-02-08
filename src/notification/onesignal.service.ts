@@ -22,10 +22,12 @@ export class OneSignalService {
     if (!this.appId || !this.apiKey) {
       this.logger.error('❌ OneSignal config eksik! .env kontrol et.');
     }
-    if (!this.enabled)
+    if (!this.enabled) {
       this.logger.warn('⚠️ OneSignal disabled (ONESIGNAL_ENABLED=false)');
-    if (this.dryRun)
+    }
+    if (this.dryRun) {
       this.logger.warn('🧪 OneSignal DRY_RUN (ONESIGNAL_DRY_RUN=true)');
+    }
   }
 
   getStatus() {
@@ -55,64 +57,8 @@ export class OneSignalService {
   }
 
   /**
-   * ✅ External ID ile gönderim (filters ile — en stabil)
-   * Mobil: OneSignal.login(userId) ZORUNLU
-   */
-  async sendToExternalUserIds(
-    externalIds: string[],
-    title: string,
-    body: string,
-  ) {
-    const g = this.guardBase();
-    if (!g.ok) return { skipped: true, reason: g.reason, recipients: 0 };
-
-    const ids = (externalIds ?? [])
-      .map(String)
-      .map((x) => x.trim())
-      .filter(Boolean);
-
-    if (!ids.length)
-      return { skipped: true, reason: 'no-recipients', recipients: 0 };
-
-    // OneSignal filters tek requestte çok id ile şişebilir.
-    // 1000 chunk zaten yapıyorsun.
-    const filters = ids.flatMap((id, idx) => {
-      const out: any[] = [];
-      if (idx > 0) out.push({ operator: 'OR' });
-      out.push({ field: 'tag', key: 'external_id', relation: '=', value: id });
-      return out;
-    });
-
-    const res = await axios.post(
-      this.url,
-      {
-        app_id: this.appId,
-        target_channel: 'push',
-        contents: { en: body },
-        headings: { en: title },
-        // ✅ external_id'i tag olarak match ediyoruz
-        filters,
-      },
-      {
-        headers: {
-          Authorization: `Basic ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-
-    const realRecipients = res.data?.recipients ?? 0;
-
-    this.logger.log(
-      `📨 OneSignal external_id(filters) env=${this.env} status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
-    );
-
-    return { ...res.data, recipients: realRecipients, externalIds: ids };
-  }
-
-  /**
-   * ✅ PLAYER ID ile gönderim (en eski/garanti yöntem)
-   * Eğer mobilde aldığın id bu ise: include_player_ids kullan.
+   * ✅ PLAYER ID ile gönderim (en stabil)
+   * OneSignal include_player_ids UUID ister.
    */
   async sendToPlayerIds(playerIds: string[], title: string, body: string) {
     const g = this.guardBase();
@@ -123,8 +69,9 @@ export class OneSignalService {
       .map((x) => x.trim())
       .filter(Boolean);
 
-    if (!ids.length)
+    if (!ids.length) {
       return { skipped: true, reason: 'no-recipients', recipients: 0 };
+    }
 
     const res = await axios.post(
       this.url,
@@ -144,6 +91,7 @@ export class OneSignalService {
     );
 
     const realRecipients = res.data?.recipients ?? 0;
+
     this.logger.log(
       `📨 OneSignal playerIds env=${this.env} status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
     );
