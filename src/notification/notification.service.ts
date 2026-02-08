@@ -1,3 +1,4 @@
+// src/notification/notification.service.ts
 import {
   Injectable,
   NotFoundException,
@@ -109,6 +110,12 @@ export class NotificationService {
     return this.sendNowExisting(notification.id);
   }
 
+  /**
+   * ✅ LIST (Admin Panel)
+   * sentCount      = UserNotification satırı sayısı (hedeflenen/inbox)
+   * deliveredCount = şimdilik sentCount ile aynı (stabil ve gerçek: inbox'a düştü)
+   * openCount      = openedAt dolu olanlar
+   */
   async list(page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
@@ -121,8 +128,61 @@ export class NotificationService {
       this.prisma.notification.count(),
     ]);
 
+    const ids = items.map((x) => x.id);
+
+    if (ids.length === 0) {
+      return {
+        items: [],
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
+    }
+
+    // ✅ Gönderilen (hedeflenen/inbox): UserNotification count
+    const sentGroups = await this.prisma.userNotification.groupBy({
+      by: ['notificationId'],
+      where: { notificationId: { in: ids } },
+      _count: { _all: true },
+    });
+
+    // ✅ Açılma: openedAt not null
+    const openGroups = await this.prisma.userNotification.groupBy({
+      by: ['notificationId'],
+      where: {
+        notificationId: { in: ids },
+        openedAt: { not: null },
+      },
+      _count: { _all: true },
+    });
+
+    const sentMap = new Map<number, number>(
+      sentGroups.map((g) => [g.notificationId, g._count._all]),
+    );
+
+    const openMap = new Map<number, number>(
+      openGroups.map((g) => [g.notificationId, g._count._all]),
+    );
+
+    const itemsWithMetrics = items.map((n) => {
+      const sentCount = sentMap.get(n.id) ?? 0;
+
+      // ✅ Teslim: inbox’a düştü olarak stabil ölçüm
+      const deliveredCount = sentCount;
+
+      const openCount = openMap.get(n.id) ?? 0;
+
+      return {
+        ...n,
+        sentCount,
+        deliveredCount,
+        openCount,
+      };
+    });
+
     return {
-      items,
+      items: itemsWithMetrics,
       total,
       page,
       limit,
@@ -200,12 +260,7 @@ export class NotificationService {
     return updated;
   }
 
-  /**
-   * ✅ TEK KAYNAK: OneSignal player_id = User.deviceId (UUID)
-   * - external_id / fallback vs. KALDIRILDI (karışıklık yaratıyordu)
-   * - sadece UUID olan deviceId’ler hedeflenir
-   * - başarılıysa SENT + userNotification yazılır
-   */
+  // (sendNowExisting ve cancel fonksiyonların aynen kalsın — sende zaten doğru)
   async sendNowExisting(id: number) {
     this.logger.log(`[sendNowExisting] mode=PLAYER_ID_ONLY notifId=${id}`);
 
@@ -267,7 +322,6 @@ export class NotificationService {
         where = { ...where, ...rulesWhere };
       }
 
-      // ✅ Audience match + deviceId çek
       const users = await this.prisma.user.findMany({
         where,
         select: { id: true, deviceId: true },
@@ -277,7 +331,6 @@ export class NotificationService {
         throw new BadRequestException('Audience matched 0 users');
       }
 
-      // ✅ UUID player_id filtre
       const usersWithPlayerId = users
         .map((u) => ({
           userId: u.id,
@@ -301,7 +354,6 @@ export class NotificationService {
         );
       }
 
-      // ✅ SSE (push’tan bağımsız)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
           type: 'notification',
@@ -312,7 +364,6 @@ export class NotificationService {
         });
       }
 
-      // ✅ OneSignal push (player_ids)
       const playerIds = usersWithPlayerId.map((x) => x.playerId);
       const r = await this.oneSignal.sendToPlayerIds(
         playerIds,
@@ -326,8 +377,6 @@ export class NotificationService {
           ? recipientsRaw
           : Number(recipientsRaw ?? 0);
 
-      // OneSignal bazen recipients=0 döndürse bile notification accepted olabilir.
-      // Bu yüzden bunu hard-fail yapmıyoruz; sadece uyarı logluyoruz.
       const providerId = r?.id ?? null;
 
       if (!providerId) {
@@ -343,7 +392,6 @@ export class NotificationService {
         );
       }
 
-      // ✅ INBOX kayıt (sadece hedeflediklerimiz)
       await this.prisma.userNotification.createMany({
         data: usersWithPlayerId.map((x) => ({
           userId: x.userId,
