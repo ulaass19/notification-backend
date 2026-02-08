@@ -9,6 +9,8 @@ import { CreateNotificationDto } from './dto/create-notification.dto';
 import { OneSignalService } from './onesignal.service';
 import { Prisma, NotificationStatus } from '@prisma/client';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
+
+// ✅ SSE Stream Service
 import { NotificationStreamService } from '../notification/realtime/notification-stream.service';
 
 @Injectable()
@@ -201,9 +203,9 @@ export class NotificationService {
     return updated;
   }
 
-  // ✅ External User ID ile gönderiyoruz (user.id)
+  // ✅✅✅ External ID + fallback subscriptionId ile gönder (push gittiği an SENT + inbox yaz)
   async sendNowExisting(id: number) {
-    this.logger.log(`🧬 NSVC:v1 sendNowExisting called -> notifId=${id}`);
+    this.logger.log(`[sendNowExisting] notifId=${id}`);
 
     const notification = await this.prisma.notification.findUnique({
       where: { id },
@@ -269,22 +271,19 @@ export class NotificationService {
         where = { ...where, ...rulesWhere };
       }
 
+      // ✅ deviceId de çekiyoruz (subscriptionId)
       const users = await this.prisma.user.findMany({
         where,
-        select: { id: true },
+        select: { id: true, deviceId: true },
       });
 
-      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
-
-      if (externalUserIds.length === 0) {
+      if (users.length === 0) {
         throw new BadRequestException('Audience matched 0 users');
       }
 
-      this.logger.log(
-        `🧬 NSVC:v1 mode=external_user_ids users=${users.length}`,
-      );
+      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
 
-      // ✅ SSE EMIT (push bağımsız)
+      // ✅ SSE EMIT (push’tan bağımsız)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
           type: 'notification',
@@ -295,38 +294,89 @@ export class NotificationService {
         });
       }
 
-      // ✅ OneSignal gönderim (chunk)
       const results: any[] = [];
+
+      // 1) external_id ile gönder
       for (const part of chunk(externalUserIds, 1000)) {
         const r = await this.oneSignal.sendToExternalUserIds(
           part,
           notification.title,
           notification.body,
         );
-        results.push(r);
+        results.push({ mode: 'external_id', ...r });
       }
 
-      // ✅ gerçek recipients hesapla
-      const totalRecipients = results.reduce((sum, r) => {
-        const v = Number(r?.recipients ?? 0);
-        return sum + (Number.isFinite(v) ? v : 0);
-      }, 0);
+      const externalRecipients = results
+        .filter((x) => x?.mode === 'external_id')
+        .reduce((sum, r) => sum + Number(r?.recipients ?? 0), 0);
 
-      if (totalRecipients <= 0) {
+      let finalMode: 'external_id' | 'subscription_fallback' = 'external_id';
+      let finalRecipients = externalRecipients;
+
+      // 2) fallback: subscriptionId (deviceId) ile gönder
+      if (externalRecipients <= 0) {
+        const usersWithSub = users
+          .filter(
+            (u: any) =>
+              typeof u.deviceId === 'string' && u.deviceId.trim().length > 0,
+          )
+          .map((u: any) => ({ id: u.id, subId: String(u.deviceId).trim() }));
+
+        const subscriptionIds = usersWithSub.map((x) => x.subId);
+
+        if (subscriptionIds.length > 0) {
+          const fb: any[] = [];
+          for (const part of chunk(subscriptionIds, 2000)) {
+            const r = await this.oneSignal.sendToSubscriptionIds(
+              part,
+              notification.title,
+              notification.body,
+            );
+            fb.push({ mode: 'subscription_fallback', ...r });
+          }
+
+          const fallbackRecipients = fb.reduce(
+            (sum, r) => sum + Number(r?.recipients ?? 0),
+            0,
+          );
+
+          results.push(...fb);
+
+          if (fallbackRecipients > 0) {
+            finalMode = 'subscription_fallback';
+            finalRecipients = fallbackRecipients;
+
+            // ✅ INBOX: fallback ile gerçekten push giden user’lar
+            await this.prisma.userNotification.createMany({
+              data: usersWithSub.map((x) => ({
+                userId: x.id,
+                notificationId: notification.id,
+              })),
+              skipDuplicates: true,
+            });
+          }
+        }
+      }
+
+      // ✅ external_id başarılıysa inbox: tüm audience users
+      if (finalMode === 'external_id' && finalRecipients > 0) {
+        await this.prisma.userNotification.createMany({
+          data: users.map((u) => ({
+            userId: u.id,
+            notificationId: notification.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      // 3) hala 0 ise fail
+      if (finalRecipients <= 0) {
         throw new BadRequestException(
-          'OneSignal recipients=0. Mobilde OneSignal.login(userId) çalışmıyor ya da external_id eşleşmiyor.',
+          'OneSignal recipients=0. External ID eşleşmiyor ve subscriptionId yok/boş.',
         );
       }
 
-      // ✅ INBOX KAYDI
-      await this.prisma.userNotification.createMany({
-        data: users.map((u) => ({
-          userId: u.id,
-          notificationId: notification.id,
-        })),
-        skipDuplicates: true,
-      });
-
+      // ✅ artık BAŞARILI: SENT + sentAt set
       const updated = await this.prisma.notification.update({
         where: { id },
         data: {
@@ -344,19 +394,19 @@ export class NotificationService {
         statusAfter: NotificationStatus.SENT,
         success: true,
         error: null,
-        providerId: results?.[0]?.id ?? null,
+        providerId: results?.find((x) => x?.id)?.id ?? null,
       });
 
       return {
         notification: updated,
         onesignal: results,
-        recipients: totalRecipients,
-        mode: 'external_user_ids',
+        recipients: finalRecipients,
+        mode: finalMode,
       };
     } catch (err: any) {
       const errorMessage = err?.response?.data
         ? JSON.stringify(err.response.data)
-        : err?.message ?? 'Unknown error';
+        : (err?.message ?? 'Unknown error');
 
       const updated = await this.prisma.notification.update({
         where: { id },

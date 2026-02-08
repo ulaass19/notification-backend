@@ -24,12 +24,10 @@ export class OneSignalService {
     if (!this.appId || !this.apiKey) {
       this.logger.error('❌ OneSignal config eksik! .env kontrol et.');
     }
-    if (!this.enabled) {
+    if (!this.enabled)
       this.logger.warn('⚠️ OneSignal disabled (ONESIGNAL_ENABLED=false)');
-    }
-    if (this.dryRun) {
+    if (this.dryRun)
       this.logger.warn('🧪 OneSignal DRY_RUN (ONESIGNAL_DRY_RUN=true)');
-    }
   }
 
   getStatus() {
@@ -58,41 +56,6 @@ export class OneSignalService {
     return { ok: true as const };
   }
 
-  /** (opsiyonel) Segment'e gönderim */
-  async sendToAll(title: string, body: string) {
-    const g = this.guardBase();
-    if (!g.ok) return { skipped: true, reason: g.reason };
-
-    const res = await axios.post(
-      this.url,
-      {
-        app_id: this.appId,
-        included_segments: ['Subscribed Users'],
-        target_channel: 'push',
-        contents: { en: body },
-        headings: { en: title },
-      },
-      {
-        headers: {
-          Authorization: `Basic ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-
-    const realRecipients = res.data?.recipients ?? 0;
-
-    this.logger.log(
-      `🧬 OSVC:v1 📨 sendToAll (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
-    );
-
-    return res.data;
-  }
-
-  /**
-   * ✅ TEK DOĞRU YOL:
-   * External User ID ile gönderim (OneSignal.login(userId) şart)
-   */
   async sendToExternalUserIds(
     externalIds: string[],
     title: string,
@@ -113,7 +76,6 @@ export class OneSignalService {
       .filter(Boolean);
 
     if (!ids.length) {
-      this.logger.warn('🧬 OSVC:v1 ⚠️ sendToExternalUserIds: ids boş');
       return {
         skipped: true,
         reason: 'no-recipients',
@@ -122,29 +84,12 @@ export class OneSignalService {
       };
     }
 
-    if (this.dryRun) {
-      this.logger.log(
-        `🧬 OSVC:v1 🧪 [DRY-RUN] sendToExternalUserIds -> ${ids.length} external_ids`,
-      );
-      return {
-        skipped: true,
-        dryRun: true,
-        recipients: ids.length,
-        externalIds: ids,
-      };
-    }
-
     const res = await axios.post<OneSignalResponse>(
       this.url,
       {
         app_id: this.appId,
-
-        // ✅ External ID hedefleme
         include_aliases: { external_id: ids },
-
-        // ✅ push'a zorla
         target_channel: 'push',
-
         contents: { en: body },
         headings: { en: title },
       },
@@ -159,9 +104,63 @@ export class OneSignalService {
     const realRecipients = res.data?.recipients ?? 0;
 
     this.logger.log(
-      `🧬 OSVC:v1 📨 sendToExternalUserIds (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
+      `📨 OneSignal external_id (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
     );
 
     return { ...res.data, externalIds: ids, recipients: realRecipients };
+  }
+
+  async sendToSubscriptionIds(
+    subscriptionIds: string[],
+    title: string,
+    body: string,
+  ) {
+    const g = this.guardBase();
+    if (!g.ok)
+      return {
+        skipped: true,
+        reason: g.reason,
+        recipients: 0,
+        subscriptionIds: [],
+      };
+
+    const ids = (subscriptionIds ?? [])
+      .map(String)
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    if (!ids.length) {
+      return {
+        skipped: true,
+        reason: 'no-recipients',
+        recipients: 0,
+        subscriptionIds: [],
+      };
+    }
+
+    const res = await axios.post(
+      this.url,
+      {
+        app_id: this.appId,
+        include_subscription_ids: ids,
+        target_channel: 'push',
+        contents: { en: body },
+        headings: { en: title },
+      },
+      {
+        headers: {
+          Authorization: `Basic ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    const realRecipients = res.data?.recipients ?? 0;
+
+    this.logger.log(
+      `📨 OneSignal subscriptionIds (env=${this.env}) status=${res.status} id=${res.data?.id ?? ''} recipients=${realRecipients}`,
+    );
+
+    return { ...res.data, subscriptionIds: ids, recipients: realRecipients };
   }
 }
