@@ -1,3 +1,4 @@
+// src/notification/notification.service.ts
 import {
   Injectable,
   NotFoundException,
@@ -200,6 +201,7 @@ export class NotificationService {
     return updated;
   }
 
+  // ✅✅✅ FIXED: OneSignal'e External User ID ile gönderiyoruz
   async sendNowExisting(id: number) {
     const notification = await this.prisma.notification.findUnique({
       where: { id },
@@ -218,7 +220,7 @@ export class NotificationService {
       data: { status: NotificationStatus.PENDING, retryCount: attempt },
     });
 
-    const chunk = <T,>(arr: T[], size = 1500) => {
+    const chunk = <T,>(arr: T[], size = 1000) => {
       const out: T[][] = [];
       for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
       return out;
@@ -252,10 +254,8 @@ export class NotificationService {
         include: { audience: true },
       });
 
-      let where: Prisma.UserWhereInput = {
-        isActive: true,
-        deviceId: { not: null },
-      };
+      // ✅ ARTIK deviceId filtrelemiyoruz. External ID = user.id
+      let where: Prisma.UserWhereInput = { isActive: true };
 
       if (link?.audience?.rules) {
         const rulesWhere = buildWhereFromRules(link.audience.rules as any[]);
@@ -264,18 +264,16 @@ export class NotificationService {
 
       const users = await this.prisma.user.findMany({
         where,
-        select: { id: true, deviceId: true },
+        select: { id: true },
       });
 
-      const deviceIds = users
-        .map((u) => u.deviceId)
-        .filter((x): x is string => typeof x === 'string' && x.length > 0);
+      const externalUserIds = users.map((u) => String(u.id)).filter(Boolean);
 
-      if (deviceIds.length === 0) {
-        throw new BadRequestException('Audience matched 0 users (deviceId yok)');
+      if (externalUserIds.length === 0) {
+        throw new BadRequestException('Audience matched 0 users');
       }
 
-      // ✅ SSE EMIT
+      // ✅ SSE EMIT (değişmedi)
       for (const u of users) {
         this.stream.emitToUser(String(u.id), {
           type: 'notification',
@@ -286,10 +284,10 @@ export class NotificationService {
         });
       }
 
-      // ✅ Asıl gönderim (chunk)
+      // ✅ OneSignal gönderim (chunk)
       const results: any[] = [];
-      for (const part of chunk(deviceIds, 1500)) {
-        const r = await this.oneSignal.sendToDeviceIds(
+      for (const part of chunk(externalUserIds, 1000)) {
+        const r = await this.oneSignal.sendToExternalUserIds(
           part,
           notification.title,
           notification.body,
@@ -297,27 +295,14 @@ export class NotificationService {
         results.push(r);
       }
 
-      // ✅ INBOX KAYDI: kullanıcıya giden bildirimleri UserNotification'a yaz
-      const deliveredDeviceIds = results
-        .flatMap((x) => (x?.deviceIds as string[] | undefined) ?? [])
-        .filter((x) => typeof x === 'string' && x.length > 0);
-
-      const finalDeviceIds = deliveredDeviceIds.length ? deliveredDeviceIds : deviceIds;
-
-      const deliveredUsers = await this.prisma.user.findMany({
-        where: { deviceId: { in: finalDeviceIds } },
-        select: { id: true },
+      // ✅ INBOX KAYDI: artık externalUserIds -> userId zaten elimizde
+      await this.prisma.userNotification.createMany({
+        data: users.map((u) => ({
+          userId: u.id,
+          notificationId: notification.id,
+        })),
+        skipDuplicates: true,
       });
-
-      if (deliveredUsers.length) {
-        await this.prisma.userNotification.createMany({
-          data: deliveredUsers.map((u) => ({
-            userId: u.id,
-            notificationId: notification.id,
-          })),
-          skipDuplicates: true,
-        });
-      }
 
       const updated = await this.prisma.notification.update({
         where: { id },
@@ -336,13 +321,14 @@ export class NotificationService {
         statusAfter: NotificationStatus.SENT,
         success: true,
         error: null,
-        providerId: (results?.[0] as any)?.id ?? null,
+        providerId: (results?.[0] as any)?.data?.id ?? (results?.[0] as any)?.id ?? null,
       });
 
       return {
         notification: updated,
         onesignal: results,
-        recipients: deliveredUsers.length,
+        recipients: users.length,
+        mode: 'external_user_ids',
       };
     } catch (err: any) {
       const errorMessage =

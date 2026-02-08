@@ -4,21 +4,12 @@ import {
   MinLength,
   IsEnum,
   IsOptional,
-  IsIn,
-  IsDateString,
   IsInt,
   Min,
   Max,
+  IsDateString,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-
-// Prisma'dan role enum'u kullanıyorsan bunu kaldırıp prisma enumunu kullanabilirsin.
-// Ama sen zaten AuthService'te @prisma/client UserRole kullanıyorsun.
-// Burada DTO için basit enum da olur.
-export enum UserRole {
-  USER = 'USER',
-  ADMIN = 'ADMIN',
-}
+import { Gender, ZodiacSign, UserRole } from '@prisma/client';
 
 export class RegisterDto {
   @IsEmail()
@@ -35,10 +26,10 @@ export class RegisterDto {
   @IsEnum(UserRole)
   role?: UserRole;
 
-  // ✅ NEW: profil alanları (mobile register akışından geliyor)
+  // ✅ Profile alanları (register akışında yolladıkların)
   @IsOptional()
-  @IsIn(['FEMALE', 'MALE', 'PREFER_NOT_TO_SAY'])
-  gender?: 'FEMALE' | 'MALE' | 'PREFER_NOT_TO_SAY';
+  @IsEnum(Gender)
+  gender?: Gender;
 
   @IsOptional()
   @IsString()
@@ -49,18 +40,17 @@ export class RegisterDto {
   hometown?: string;
 
   @IsOptional()
-  @IsString()
-  zodiacSign?: string;
+  @IsEnum(ZodiacSign)
+  zodiacSign?: ZodiacSign;
 
-  // bazı yerlerde birthYear gönderiliyor — kabul edelim
+  // Eğer sadece yıl yolluyorsan
   @IsOptional()
-  @Type(() => Number)
   @IsInt()
   @Min(1900)
   @Max(2100)
   birthYear?: number;
 
-  // mobile şu formatı gönderiyor: YYYY-MM-DD
+  // Eğer "YYYY-MM-DD" yolluyorsan (senin flow’da var)
   @IsOptional()
   @IsDateString()
   birthDate?: string;

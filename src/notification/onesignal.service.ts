@@ -2,6 +2,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
+type SendResult = {
+  skipped?: boolean;
+  reason?: string;
+  dryRun?: boolean;
+  env: string;
+  mode: 'external' | 'subscription' | 'player' | 'segment';
+  recipients: number;
+  deviceIds: string[];
+  data?: any;
+};
+
 @Injectable()
 export class OneSignalService {
   private readonly logger = new Logger(OneSignalService.name);
@@ -22,9 +33,7 @@ export class OneSignalService {
 
   constructor() {
     if (!this.appId || !this.apiKey) {
-      this.logger.error(
-        '❌ OneSignal config eksik! .env dosyasını kontrol et.',
-      );
+      this.logger.error('❌ OneSignal config eksik! .env dosyasını kontrol et.');
     }
     if (!this.enabled) {
       this.logger.warn(
@@ -56,12 +65,227 @@ export class OneSignalService {
     };
   }
 
-  /** (Eski) Segment'e gönderim — kalsın dursun */
-  async sendToAll(title: string, body: string) {
-    if (!this.enabled) return { skipped: true, reason: 'disabled' };
-    if (!this.appId || !this.apiKey)
-      return { skipped: true, reason: 'config-missing' };
-    if (this.dryRun) return { skipped: true, dryRun: true };
+  private baseHeaders() {
+    return {
+      Authorization: `Basic ${this.apiKey}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private guardCommon(ids: string[], mode: SendResult['mode']): SendResult | null {
+    if (!this.enabled) {
+      this.logger.warn('🚫 OneSignal disabled');
+      return {
+        skipped: true,
+        reason: 'disabled',
+        env: this.env,
+        mode,
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
+
+    if (!this.appId || !this.apiKey) {
+      this.logger.error('❌ OneSignal config missing');
+      return {
+        skipped: true,
+        reason: 'config-missing',
+        env: this.env,
+        mode,
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
+
+    const cleaned = (ids ?? []).map(String).filter(Boolean);
+    if (cleaned.length === 0) {
+      this.logger.warn(`⚠️ OneSignal: recipient yok (${mode})`);
+      return {
+        skipped: true,
+        reason: 'no-recipients',
+        env: this.env,
+        mode,
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
+
+    if (this.dryRun) {
+      this.logger.log(`🧪 [DRY-RUN] OneSignal ${mode} → ${cleaned.length} hedef`);
+      return {
+        skipped: true,
+        dryRun: true,
+        env: this.env,
+        mode,
+        recipients: cleaned.length,
+        deviceIds: cleaned,
+      };
+    }
+
+    return null;
+  }
+
+  /** ✅ 1) EN SAĞLAM: External User ID ile gönder (mobile: OneSignal.login("4")) */
+  async sendToExternalUserIds(
+    externalUserIds: Array<string | number>,
+    title: string,
+    body: string,
+  ): Promise<SendResult> {
+    const ids = (externalUserIds ?? []).map(String).filter(Boolean);
+    const guard = this.guardCommon(ids, 'external');
+    if (guard) return guard;
+
+    try {
+      const res = await axios.post(
+        this.url,
+        {
+          app_id: this.appId,
+          include_external_user_ids: ids,
+          channel_for_external_user_ids: 'push',
+          headings: { en: title },
+          contents: { en: body },
+        },
+        { headers: this.baseHeaders() },
+      );
+
+      this.logger.log(
+        `📨 OneSignal sendToExternalUserIds env=${this.env} status=${res.status} id=${res.data?.id} targets=${ids.length}`,
+      );
+
+      return {
+        env: this.env,
+        mode: 'external',
+        recipients: ids.length,
+        deviceIds: ids,
+        data: res.data,
+      };
+    } catch (err: any) {
+      const data = err?.response?.data ?? err?.message ?? 'Unknown error';
+      this.logger.error(
+        `❌ OneSignal sendToExternalUserIds error: ${JSON.stringify(data)}`,
+      );
+      throw err;
+    }
+  }
+
+  /** ✅ 2) Subscription ID ile gönder (panelde gördüğün "Subscription ID") */
+  async sendToSubscriptionIds(
+    subscriptionIds: string[],
+    title: string,
+    body: string,
+  ): Promise<SendResult> {
+    const ids = (subscriptionIds ?? []).map(String).filter(Boolean);
+    const guard = this.guardCommon(ids, 'subscription');
+    if (guard) return guard;
+
+    try {
+      const res = await axios.post(
+        this.url,
+        {
+          app_id: this.appId,
+          include_subscription_ids: ids,
+          headings: { en: title },
+          contents: { en: body },
+        },
+        { headers: this.baseHeaders() },
+      );
+
+      this.logger.log(
+        `📨 OneSignal sendToSubscriptionIds env=${this.env} status=${res.status} id=${res.data?.id} targets=${ids.length}`,
+      );
+
+      return {
+        env: this.env,
+        mode: 'subscription',
+        recipients: ids.length,
+        deviceIds: ids,
+        data: res.data,
+      };
+    } catch (err: any) {
+      const data = err?.response?.data ?? err?.message ?? 'Unknown error';
+      this.logger.error(
+        `❌ OneSignal sendToSubscriptionIds error: ${JSON.stringify(data)}`,
+      );
+      throw err;
+    }
+  }
+
+  /** ✅ 3) Legacy player id (eski sistem) — sende şu an büyük ihtimal yanlış */
+  async sendToPlayerIds(
+    playerIds: string[],
+    title: string,
+    body: string,
+  ): Promise<SendResult> {
+    const ids = (playerIds ?? []).map(String).filter(Boolean);
+    const guard = this.guardCommon(ids, 'player');
+    if (guard) return guard;
+
+    try {
+      const res = await axios.post(
+        this.url,
+        {
+          app_id: this.appId,
+          include_player_ids: ids,
+          headings: { en: title },
+          contents: { en: body },
+        },
+        { headers: this.baseHeaders() },
+      );
+
+      this.logger.log(
+        `📨 OneSignal sendToPlayerIds env=${this.env} status=${res.status} id=${res.data?.id} targets=${ids.length}`,
+      );
+
+      return {
+        env: this.env,
+        mode: 'player',
+        recipients: ids.length,
+        deviceIds: ids,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: res.data,
+      };
+    } catch (err: any) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      const data = err?.response?.data ?? err?.message ?? 'Unknown error';
+      this.logger.error(
+        `❌ OneSignal sendToPlayerIds error: ${JSON.stringify(data)}`,
+      );
+      throw err;
+    }
+  }
+
+  /** (Eski) Segment'e gönderim — kalsın */
+  async sendToAll(title: string, body: string): Promise<SendResult> {
+    if (!this.enabled) {
+      return {
+        skipped: true,
+        reason: 'disabled',
+        env: this.env,
+        mode: 'segment',
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
+    if (!this.appId || !this.apiKey) {
+      return {
+        skipped: true,
+        reason: 'config-missing',
+        env: this.env,
+        mode: 'segment',
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
+    if (this.dryRun) {
+      return {
+        skipped: true,
+        dryRun: true,
+        env: this.env,
+        mode: 'segment',
+        recipients: 0,
+        deviceIds: [],
+      };
+    }
 
     try {
       const res = await axios.post(
@@ -72,115 +296,28 @@ export class OneSignalService {
           contents: { en: body },
           headings: { en: title },
         },
-        {
-          headers: {
-            Authorization: `Basic ${this.apiKey}`,
-            'Content-Type': 'application/json',
-          },
-        },
+        { headers: this.baseHeaders() },
       );
 
       this.logger.log(
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        `📨 OneSignal sentToAll (env=${this.env}) status=${res.status} id=${res.data?.id}`,
+        `📨 OneSignal sendToAll env=${this.env} status=${res.status} id=${res.data?.id}`,
       );
 
-      // ✅ standartlaştır
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
       return {
-        ...res.data,
-        deviceIds: [],
+        env: this.env,
+        mode: 'segment',
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         recipients: res.data?.recipients ?? 0,
+        deviceIds: [],
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: res.data,
       };
     } catch (err: any) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       const data = err?.response?.data ?? err?.message ?? 'Unknown error';
       this.logger.error(
         `❌ OneSignal sendToAll error: ${JSON.stringify(data)}`,
-      );
-      throw err;
-    }
-  }
-
-  /** ✅ ASIL İHTİYACIMIZ: deviceId(playerId) listesine gönder */
-  async sendToDeviceIds(deviceIds: string[], title: string, body: string) {
-    if (!this.enabled) {
-      this.logger.warn('🚫 OneSignal disabled');
-      return {
-        skipped: true,
-        reason: 'disabled',
-        deviceIds: [],
-        recipients: 0,
-      };
-    }
-
-    if (!this.appId || !this.apiKey) {
-      this.logger.error('❌ OneSignal config missing');
-      return {
-        skipped: true,
-        reason: 'config-missing',
-        deviceIds: [],
-        recipients: 0,
-      };
-    }
-
-    const ids = (deviceIds ?? []).filter(Boolean);
-    if (ids.length === 0) {
-      this.logger.warn('⚠️ sendToDeviceIds: recipient yok (deviceIds boş)');
-      return {
-        skipped: true,
-        reason: 'no-recipients',
-        deviceIds: [],
-        recipients: 0,
-      };
-    }
-
-    if (this.dryRun) {
-      this.logger.log(`🧪 [DRY-RUN] sendToDeviceIds → ${ids.length} devices`);
-      return {
-        skipped: true,
-        dryRun: true,
-        count: ids.length,
-        deviceIds: ids,
-        recipients: ids.length,
-      };
-    }
-
-    try {
-      const res = await axios.post(
-        this.url,
-        {
-          app_id: this.appId,
-          include_player_ids: ids, // 🔥 KRİTİK
-          contents: { en: body },
-          headings: { en: title },
-        },
-        {
-          headers: {
-            Authorization: `Basic ${this.apiKey}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      this.logger.log(
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        `📨 OneSignal sentToDeviceIds (env=${this.env}) status=${res.status} id=${res.data?.id} recipients=${ids.length}`,
-      );
-
-      // ✅ KRİTİK: deviceIds'i response'a koyuyoruz ki NotificationService inbox yazsın
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-      return {
-        ...res.data,
-        deviceIds: ids,
-        recipients: ids.length,
-      };
-    } catch (err: any) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-      const data = err?.response?.data ?? err?.message ?? 'Unknown error';
-      this.logger.error(
-        `❌ OneSignal sendToDeviceIds error: ${JSON.stringify(data)}`,
       );
       throw err;
     }
