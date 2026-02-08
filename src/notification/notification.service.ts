@@ -239,8 +239,7 @@ export class NotificationService {
         if (!field || !op) continue;
         if (raw === undefined || raw === null) continue;
 
-        const value =
-          typeof raw === 'string' ? raw.trim() : raw;
+        const value = typeof raw === 'string' ? raw.trim() : raw;
 
         if (value === '' || value === null) continue;
 
@@ -321,7 +320,7 @@ export class NotificationService {
 
       // 1) external_id
       for (const part of chunk(externalUserIds, 1000)) {
-        const r = await this.oneSignal.sendToExternalUserIds(
+        const r = await this.oneSignal.sendToPlayerIds(
           part,
           notification.title,
           notification.body,
@@ -408,10 +407,9 @@ export class NotificationService {
         mode: finalMode,
       };
     } catch (err: any) {
-      const errorMessage =
-        err?.response?.data
-          ? JSON.stringify(err.response.data)
-          : err?.message ?? 'Unknown error';
+      const errorMessage = err?.response?.data
+        ? JSON.stringify(err.response.data)
+        : (err?.message ?? 'Unknown error');
 
       const updated = await this.prisma.notification.update({
         where: { id },
