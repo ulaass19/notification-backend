@@ -340,7 +340,7 @@ export class NotificationService {
       if (externalRecipients <= 0 && subscriptionIds.length > 0) {
         const fb: any[] = [];
         for (const part of chunk(subscriptionIds, 2000)) {
-          const r = await this.oneSignal.sendToSubscriptionIds(
+          const r = await this.oneSignal.sendToPlayerIds(
             part,
             notification.title,
             notification.body,
