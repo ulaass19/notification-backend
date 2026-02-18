@@ -153,7 +153,9 @@ export class AuthService {
       },
     });
 
-    await this.mailService.sendEmailVerificationCode(email, otp);
+    this.mailService
+      .sendEmailVerificationCode(email, otp)
+      .catch((e) => console.error('sendEmailVerificationCode failed:', e));
 
     const accessToken = await this.signToken(user.id, user.email!, user.role);
 
